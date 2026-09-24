@@ -1,0 +1,16 @@
+[package]
+name = "cracker-factory"
+version = "0.1.0"
+edition = "2021"
+description = "Worker-fleet orchestrator for the classical cracker engine: disjoint range planning with coverage proofs, aggregated progress, cancel-on-match, and honest scaling for huge keyspaces"
+
+[[bin]]
+name = "cracker-factory"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ethnum.workspace = true
+signal-hook.workspace = true

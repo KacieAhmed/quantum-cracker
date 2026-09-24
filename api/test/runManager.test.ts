@@ -59,6 +59,22 @@ function awaitSettled(manager: RunManager): Promise<void> {
   });
 }
 
+/** The report write is fire-and-forget after the run settles; poll for it. */
+function waitForFile(file: string, timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const poll = setInterval(() => {
+      if (existsSync(file)) {
+        clearInterval(poll);
+        resolve();
+      } else if (Date.now() - started > timeoutMs) {
+        clearInterval(poll);
+        reject(new Error(`report not written: ${file}`));
+      }
+    }, 20);
+  });
+}
+
 describe("RunManager (fake cli)", () => {
   it("streams lanes and settles a match with cancel-on-match", async () => {
     const runsDir = await makeRunsDir();
@@ -79,7 +95,7 @@ describe("RunManager (fake cli)", () => {
 
     // A "done" message was broadcast, and the report landed on disk.
     expect(messages.some((m) => m.type === "done")).toBe(true);
-    expect(existsSync(path.join(runsDir, `${report.runId}.json`))).toBe(true);
+    await waitForFile(path.join(runsDir, `${report.runId}.json`));
     expect(manager.cancel()).toBe(false); // nothing left to cancel
   }, 15000);
 

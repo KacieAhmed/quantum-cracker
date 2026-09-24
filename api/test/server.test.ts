@@ -368,3 +368,97 @@ describe("static serving (single-port hosting)", () => {
     }
   });
 });
+
+describe("cancel across run states", () => {
+  it("cancels an active run even when the request declares a JSON content-type with no body", async () => {
+    const { app } = await makeApp({ progressMs: 200 });
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: POOLED_ETH,
+          workers: 1,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId } = started.json();
+
+      // Regression: the console once sent exactly this shape and got a 400
+      // (FST_ERR_CTP_EMPTY_JSON_BODY) before the handler ever ran.
+      const res = await app.inject({
+        method: "POST",
+        url: `/crack/${runId}/cancel`,
+        headers: { "content-type": "application/json" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ runId, cancelled: true });
+      await new Promise((r) => setTimeout(r, 300));
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns a structured 404 when there is no active run", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack/run_absent/cancel",
+        headers: { "content-type": "application/json" },
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "no such active run" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 when cancelling a run that already finished", async () => {
+    const { app } = await makeApp({
+      runQuantumFn: async ({ bits }) => ({ toy: true as const, n_bits: bits }),
+    });
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "quantum",
+          address: POOLED_ETH,
+          quantumBits: 4,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId } = started.json();
+
+      // Let the toy simulation settle and finalize the run.
+      await new Promise((r) => setTimeout(r, 300));
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/crack/${runId}/cancel`,
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "no such active run" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("still rejects an empty body on routes that require one", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        headers: { "content-type": "application/json" },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+});

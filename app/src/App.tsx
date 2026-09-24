@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  cancelFailureMessage,
   cancelRun,
   getCorpus,
   getSystem,
@@ -201,8 +202,11 @@ export default function App() {
     if (!report) return;
     try {
       await cancelRun(report.runId);
+      setStartError(null);
     } catch (err) {
-      setStartError(err instanceof ApiError ? err.message : String(err));
+      // The run may settle between the button rendering and the click;
+      // phrase every cancel outcome kindly instead of surfacing a raw error.
+      setStartError(cancelFailureMessage(err));
     }
   };
 

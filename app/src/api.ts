@@ -48,7 +48,11 @@ async function fetchJson<T>(path: string): Promise<T> {
 async function postJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    // A bodyless POST (cancel) must not declare a JSON content-type: the
+    // API would parse that as an empty JSON body and answer 400 before the
+    // cancel handler ever runs.
+    headers:
+      body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const payload = await parseBody(res);
@@ -68,6 +72,19 @@ export const startCrack = (request: CrackRequest): Promise<CrackStart> =>
 
 export const cancelRun = (runId: string): Promise<Cancelled> =>
   postJson<Cancelled>(`/crack/${encodeURIComponent(runId)}/cancel`);
+
+/**
+ * Cancel failures phrased for a human: a run that settled between the button
+ * rendering and the click is not an error, so 404 (no such active run) and
+ * 409 (run is not running) become a friendly note instead of a raw one.
+ */
+export function cancelFailureMessage(err: unknown): string {
+  if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
+    return "No active run to cancel — it may have already finished.";
+  }
+  const detail = err instanceof Error ? err.message : String(err);
+  return `Cancel failed: ${detail}`;
+}
 
 /** Chain/mode values the toggles show, in order. */
 export const CHAINS: readonly Chain[] = ["bitcoin", "ethereum"] as const;

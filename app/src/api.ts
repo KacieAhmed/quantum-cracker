@@ -1,0 +1,80 @@
+import type {
+  Cancelled,
+  Chain,
+  CrackRequest,
+  CrackStart,
+  CorpusDoc,
+  Mode,
+  SystemInfo,
+  TargetVerdict,
+} from "./types";
+
+/** Non-2xx response with the API's structured error body when present. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly payload: unknown;
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
+async function parseBody(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function errorMessage(payload: unknown, status: number, statusText: string): string {
+  if (payload !== null && typeof payload === "object" && "error" in payload) {
+    const err = (payload as { error?: unknown }).error;
+    if (typeof err === "string" && err.length > 0) return err;
+  }
+  return `request failed: ${status} ${statusText}`;
+}
+
+async function fetchJson<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  const body = await parseBody(res);
+  if (!res.ok) throw new ApiError(errorMessage(body, res.status, res.statusText), res.status, body);
+  return body as T;
+}
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const payload = await parseBody(res);
+  if (!res.ok) throw new ApiError(errorMessage(payload, res.status, res.statusText), res.status, payload);
+  return payload as T;
+}
+
+export const getSystem = (): Promise<SystemInfo> => fetchJson<SystemInfo>("/system");
+
+export const getCorpus = (): Promise<CorpusDoc> => fetchJson<CorpusDoc>("/corpus");
+
+export const validateAddress = (address: string): Promise<TargetVerdict> =>
+  postJson<TargetVerdict>("/validate", { address });
+
+export const startCrack = (request: CrackRequest): Promise<CrackStart> =>
+  postJson<CrackStart>("/crack", request);
+
+export const cancelRun = (runId: string): Promise<Cancelled> =>
+  postJson<Cancelled>(`/crack/${encodeURIComponent(runId)}/cancel`);
+
+/** Chain/mode values the toggles show, in order. */
+export const CHAINS: readonly Chain[] = ["bitcoin", "ethereum"] as const;
+export const MODES: readonly Mode[] = ["classic", "quantum"] as const;
+
+/** WebSocket endpoint for the live run feed (same-origin; proxied in dev). */
+export function wsUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${window.location.host}/ws`;
+}

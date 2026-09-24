@@ -101,6 +101,14 @@ struct Args {
     #[arg(long)]
     validate_only: bool,
 
+    /// Derive every supported address from this BIP-39 mnemonic (the same
+    /// derive::derive_addresses path the search engine runs per candidate)
+    /// and print one JSON object: addresses, BIP-32 paths, and whether the
+    /// phrase lies inside the pooled demo search space. Errors print
+    /// {"error": ...} and exit 2. No search is started.
+    #[arg(long)]
+    derive_mnemonic: Option<String>,
+
     /// Print the embedded demo-corpus targets as JSON and exit. `searchable`
     /// marks wallets inside the pooled search space; the four random corpus
     /// wallets are valid targets that a pooled-space search never matches.
@@ -126,6 +134,16 @@ fn main() {
         } else {
             2
         });
+    }
+    if let Some(mnemonic) = &args.derive_mnemonic {
+        match derive_mnemonic_json(&args, mnemonic) {
+            Ok(json) => println!("{json}"),
+            Err(err) => {
+                println!("{}", serde_json::json!({ "error": err.to_string() }));
+                std::process::exit(2);
+            }
+        }
+        return;
     }
     if args.targets.is_empty() {
         eprintln!("error: --target <TARGETS> is required for a search");
@@ -160,7 +178,51 @@ fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
 }
 
 fn match_event(m: &Match) -> serde_json::Value {
-    serde_json::json!({ "event": "match", "match": m })
+    serde_json::json!({ "event": "match", "match": m, "derivation_path": m.path.bip32_path() })
+}
+
+/// One JSON object for `--derive-mnemonic`: every supported address of the
+/// phrase, the BIP-32 path behind each, and pooled-space membership. Uses the
+/// identical derivation call the search engine runs per candidate, so what a
+/// user sees here is exactly what a match is compared against.
+fn derive_mnemonic_json(args: &Args, mnemonic: &str) -> cracker_core::Result<serde_json::Value> {
+    // Single spaces, lowercase (the English wordlist is pure ASCII lowercase).
+    let normalized = mnemonic
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    cracker_core::bip39::validate(&normalized)?;
+    let derived = cracker_core::derive::derive_addresses(
+        &normalized,
+        &args.passphrase,
+        &[PathKind::Eth, PathKind::BtcP2pkh, PathKind::BtcBech32],
+    )?;
+    let address = |bytes: Option<[u8; 20]>, kind: PathKind| -> cracker_core::Result<String> {
+        let bytes = bytes.ok_or_else(|| {
+            CrackerError::Other(format!("engine did not derive a {} address", kind.label()))
+        })?;
+        Ok(kind.format_address(&bytes))
+    };
+    let pool = load_pool(args)?;
+    Ok(serde_json::json!({
+        "mnemonic": normalized,
+        "addresses": {
+            "eth": address(derived.eth, PathKind::Eth)?,
+            "btc_p2pkh": address(derived.btc_p2pkh, PathKind::BtcP2pkh)?,
+            "btc_bech32": address(derived.btc_bech32, PathKind::BtcBech32)?,
+        },
+        "paths": {
+            "eth": PathKind::Eth.bip32_path(),
+            "btc_p2pkh": PathKind::BtcP2pkh.bip32_path(),
+            "btc_bech32": PathKind::BtcBech32.bip32_path(),
+        },
+        "pool_membership": {
+            "in_space": pool.contains_mnemonic(&normalized),
+            "total_prefixes": pool.total_prefixes(),
+            "raw_candidates": pool.raw_candidates(),
+        },
+    }))
 }
 
 /// Validate each target against the engine's decode rules (malformed fails

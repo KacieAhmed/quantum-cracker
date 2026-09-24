@@ -51,6 +51,10 @@ pub struct Progress {
     /// Candidates that passed the checksum and were fully derived + compared.
     pub derived: AtomicU64,
     pub matches: AtomicU64,
+    /// Highest prefix ordinal claimed so far (monotone under parallel chunks):
+    /// a real candidate from the live frontier, for sampled "what is being
+    /// tried right now" displays.
+    pub current_prefix: AtomicU64,
 }
 
 /// One searcher over one compiled pool config. `stop` is shared, so any
@@ -128,6 +132,9 @@ impl Searcher {
 
     fn test_ordinal(&self, ordinal: u64, candidates: &mut Vec<[u16; 12]>) {
         self.progress.prefixes_done.fetch_add(1, Ordering::Relaxed);
+        self.progress
+            .current_prefix
+            .fetch_max(ordinal, Ordering::Relaxed);
         let prefix = self.config.pool.assemble_prefix(ordinal);
         self.config.pool.candidates_for_prefix(&prefix, candidates);
         for indices in candidates.drain(..) {

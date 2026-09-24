@@ -58,7 +58,8 @@ impl AddressTypeArg {
 )]
 struct Args {
     /// Target address (repeatable); each must match --address-type.
-    #[arg(long = "target", required = true)]
+    /// Not required when --validate-only / --list-targets handle the call.
+    #[arg(long = "target")]
     targets: Vec<String>,
 
     /// Derivation path(s) to run per candidate.
@@ -94,10 +95,42 @@ struct Args {
     /// Continue scanning after a match (default: stop on the first match).
     #[arg(long)]
     exhaustive: bool,
+
+    /// Validate the targets against the engine rules (doc section 8) and exit
+    /// without searching: one JSON verdict per target, exit 0 iff all valid.
+    #[arg(long)]
+    validate_only: bool,
+
+    /// Print the embedded demo-corpus targets as JSON and exit. `searchable`
+    /// marks wallets inside the pooled search space; the four random corpus
+    /// wallets are valid targets that a pooled-space search never matches.
+    #[arg(long)]
+    list_targets: bool,
 }
 
 fn main() {
     let args = Args::parse();
+    if args.list_targets {
+        match list_targets() {
+            Ok(json) => println!("{json}"),
+            Err(err) => {
+                eprintln!("error: {err}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+    if args.validate_only {
+        std::process::exit(if validate_targets(&args.targets) {
+            0
+        } else {
+            2
+        });
+    }
+    if args.targets.is_empty() {
+        eprintln!("error: --target <TARGETS> is required for a search");
+        std::process::exit(2);
+    }
     match run(&args) {
         Ok(found) => std::process::exit(if found { 0 } else { 1 }),
         Err(err) => {
@@ -128,6 +161,76 @@ fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
 
 fn match_event(m: &Match) -> serde_json::Value {
     serde_json::json!({ "event": "match", "match": m })
+}
+
+/// Validate each target against the engine's decode rules (malformed fails
+/// decode; well-formed-but-wrong decodes fine and only fails compare, so this
+/// mode can never reject a valid-but-foreign address). One JSON verdict per
+/// target; the process exits 0 iff every target validated.
+fn validate_targets(targets: &[String]) -> bool {
+    let mut all_valid = true;
+    for t in targets {
+        let verdict = match cracker_core::validate::parse_target(t) {
+            Ok(parsed) => serde_json::json!({
+                "target": t,
+                "valid": true,
+                "kind": parsed.kind().label(),
+                "normalized": parsed.kind().format_address(&parsed.bytes()),
+            }),
+            Err(err) => {
+                all_valid = false;
+                serde_json::json!({ "target": t, "valid": false, "error": err.to_string() })
+            }
+        };
+        println!("{verdict}");
+    }
+    all_valid
+}
+
+/// The embedded demo-corpus targets, straight from the engine's wallets.json
+/// (single source of truth: no addresses are duplicated in the API or UI).
+fn list_targets() -> cracker_core::Result<serde_json::Value> {
+    let doc: serde_json::Value = serde_json::from_str(cracker_core::WALLETS_JSON)
+        .map_err(|e| CrackerError::Other(format!("embedded wallets.json: {e}")))?;
+    let wallets = doc["wallets"].as_array().ok_or_else(|| {
+        CrackerError::Other("embedded wallets.json: missing wallets array".to_string())
+    })?;
+    let mut out = Vec::with_capacity(wallets.len() + 1);
+    for (i, w) in wallets.iter().enumerate() {
+        out.push(serde_json::json!({
+            "id": format!("wallet-{}", i + 1),
+            "label": w["label"],
+            "searchable": false,
+            "addresses": {
+                "eth": w["eth"]["address"],
+                "btc_p2pkh": w["btc_p2pkh"]["address"],
+                "btc_bech32": w["btc_bech32"]["address"],
+            },
+        }));
+    }
+    let pooled = &doc["pooled_demo_wallet"];
+    out.push(serde_json::json!({
+        "id": "pooled-demo-wallet",
+        "label": "pooled-demo-wallet",
+        "searchable": true,
+        "addresses": {
+            "eth": pooled["eth"]["address"],
+            "btc_p2pkh": pooled["btc_p2pkh"]["address"],
+            "btc_bech32": pooled["btc_bech32"]["address"],
+        },
+    }));
+    // Keyspace dimensions of the pooled search space: the API splits these
+    // prefix ordinals into disjoint worker ranges before spawning lanes.
+    let pool_cfg: PoolConfigJson = serde_json::from_value(pooled["pool_config"].clone())
+        .map_err(|e| CrackerError::Other(format!("embedded pool_config: {e}")))?;
+    let pool = PoolSearch::from_config(&pool_cfg, "")?;
+    Ok(serde_json::json!({
+        "wallets": out,
+        "space": {
+            "total_prefixes": pool.total_prefixes(),
+            "raw_candidates": pool.raw_candidates(),
+        },
+    }))
 }
 
 fn run(args: &Args) -> cracker_core::Result<bool> {
@@ -196,6 +299,7 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
         let searcher = Arc::clone(&searcher);
         let done = Arc::clone(&done);
         let interval = Duration::from_millis(args.progress_ms);
+        let range_start = args.start; // Copy into the 'static ticker thread
         let mut last_derived = 0u64;
         let mut last_tick = Instant::now();
         std::thread::spawn(move || {
@@ -204,6 +308,12 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
                 std::thread::sleep(interval);
                 let newly = searcher.take_matches();
                 let derived = searcher.progress.derived.load(Ordering::Relaxed);
+                // The frontier is the highest ordinal some worker has claimed;
+                // clamped into this lane's range it names a candidate the
+                // engine is actually walking (or the lane's first ordinal
+                // before any work has started).
+                let raw_frontier = searcher.progress.current_prefix.load(Ordering::Relaxed);
+                let frontier = raw_frontier.clamp(range_start, end.saturating_sub(1));
                 let dt = last_tick.elapsed().as_secs_f64();
                 let rate = if dt > 0.0 {
                     (derived - last_derived) as f64 / dt
@@ -236,6 +346,11 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
                                 0.0
                             },
                             "matches": searcher.matches_found(),
+                            "frontier_prefix": frontier,
+                            "frontier_phrase": searcher
+                                .config
+                                .pool
+                                .candidate_at(frontier),
                         });
                         if writeln!(out, "{line}").is_err() || out.flush().is_err() {
                             ok = false;
@@ -254,7 +369,6 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
     let scan_started = Instant::now();
     let run_matches = searcher.run_range(args.start..end);
     let elapsed = scan_started.elapsed();
-
     done.store(true, Ordering::Relaxed);
     let ticker_matches = ticker.join().unwrap_or_default();
     let final_matches = searcher.take_matches();

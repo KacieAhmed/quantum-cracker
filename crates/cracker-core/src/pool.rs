@@ -176,6 +176,23 @@ impl PoolSearch {
     pub fn passphrase(&self) -> &str {
         &self.passphrase
     }
+
+    /// The checksum-valid candidate for a prefix ordinal, as a phrase string.
+    /// Every prefix has exactly one pool completion that passes the checksum
+    /// (the pool covers each checksum nibble exactly once), so this is the
+    /// deterministic candidate the engine tests at `ordinal` — used for
+    /// sampled live-view displays. `None` iff `ordinal >= total_prefixes()`
+    /// or the (sub-2^-127) completion round-trips badly.
+    pub fn candidate_at(&self, ordinal: u64) -> Option<String> {
+        if ordinal >= self.total_prefixes() {
+            return None;
+        }
+        let prefix = self.assemble_prefix(ordinal);
+        let mut out = Vec::new();
+        self.candidates_for_prefix(&prefix, &mut out);
+        out.first()
+            .and_then(|indices| bip39::mnemonic_from_indices(indices).ok())
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +252,21 @@ mod tests {
             bip39::word_index("mango").unwrap() as u16,
         ];
         assert_eq!(prefix, expected);
+    }
+
+    #[test]
+    fn candidate_at_returns_the_documented_target_phrase_at_its_ordinal() {
+        // The pooled wallet's prefix ordinal (505_209) must round-trip through
+        // candidate_at to exactly the documented target phrase.
+        let pool = corpus_pool();
+        let phrase = pool
+            .candidate_at(505_209)
+            .expect("target ordinal has one checksum-valid completion");
+        assert_eq!(
+            phrase,
+            "ocean abstract raven accident hill absent winter abstract candy abuse mango able"
+        );
+        assert_eq!(pool.candidate_at(pool.total_prefixes()), None);
     }
 
     #[test]

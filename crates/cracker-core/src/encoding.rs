@@ -150,7 +150,7 @@ pub fn bech32_encode(hrp: &str, witness_version: u8, program: &[u8]) -> String {
         out.push(BECH32_CHARSET[usize::from(v)] as char);
     }
     for i in 0..6 {
-        out.push(BECH32_CHARSET[(((chk >> (5 * (5 - i))) & 31) as usize)] as char);
+        out.push(BECH32_CHARSET[(chk >> (5 * (5 - i)) & 31) as usize] as char);
     }
     out
 }
@@ -191,15 +191,20 @@ pub fn bech32_decode(s: &str) -> Result<Vec<u8>> {
     if bech32_polymod(&full) != 1 {
         return Err(CrackerError::MalformedAddress("bech32 checksum failure"));
     }
-    let witness_version = values[0];
+    // Strip the 6-character bech32 checksum before interpreting the payload.
+    if values.len() < 7 {
+        return Err(CrackerError::MalformedAddress("bech32 data too short"));
+    }
+    let payload = &values[..values.len() - 6];
+    let witness_version = payload[0];
     if witness_version > 16 {
         return Err(CrackerError::MalformedAddress(
             "witness version out of range",
         ));
     }
-    let program = convert_bits(&values[1..], 5, 8, false).ok_or(CrackerError::MalformedAddress(
-        "invalid witness program padding",
-    ))?;
+    let program = convert_bits(&payload[1..], 5, 8, false).ok_or(
+        CrackerError::MalformedAddress("invalid witness program padding"),
+    )?;
     if witness_version == 0 && program.len() != 20 && program.len() != 32 {
         return Err(CrackerError::MalformedAddress(
             "version-0 witness program must be 20 or 32 bytes",

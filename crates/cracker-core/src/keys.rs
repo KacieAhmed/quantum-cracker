@@ -4,6 +4,7 @@
 //! when the sum reaches n); correctness is anchored end-to-end by every address
 //! test vector, since CKDpriv adds scalars on every derivation step.
 
+use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::SecretKey;
 use ripemd::Ripemd160;
 use sha2::{Digest, Sha256};
@@ -60,7 +61,9 @@ pub fn scalar_add_mod_n(a: &[u8; 32], b: &[u8; 32]) -> Result<[u8; 32]> {
             out[i] = ((d + 256) & 0xff) as u8;
             borrow = i16::from(d < 0);
         }
-        debug_assert_eq!(borrow, 0);
+        // The final borrow equals the 257th carry bit: a+b = 2^256*carry + low,
+        // and 2^256*carry + (low - n) is exactly (a+b) mod n.
+        debug_assert_eq!(borrow, i16::from(carry as u8));
     }
     if out == [0u8; 32] {
         // BIP-32: k_i = 0 makes the child invalid.
@@ -125,7 +128,7 @@ mod tests {
         // Doc section 11 anchors: keccak256("") = c5d246..5a470, keccak256("abc") = 4e0365..6c45.
         let empty = keccak256(b"");
         assert_eq!(empty[0..3], [0xc5, 0xd2, 0x46]);
-        assert_eq!(empty[29..32], [0x5a, 0x47, 0x70]);
+        assert_eq!(empty[29..32], [0x85, 0xa4, 0x70]);
         let abc = keccak256(b"abc");
         assert_eq!(abc[0..3], [0x4e, 0x03, 0x65]);
         assert_eq!(abc[30..32], [0x6c, 0x45]);

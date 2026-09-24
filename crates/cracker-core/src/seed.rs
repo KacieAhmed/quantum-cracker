@@ -1,7 +1,7 @@
 //! BIP-39 mnemonic to 512-bit seed: PBKDF2-HMAC-SHA512, 2048 iterations,
 //! salt `"mnemonic" + passphrase` (reference doc section 2.3).
 
-use pbkdf2::pbkdf2_hmac_array;
+use pbkdf2::pbkdf2_hmac;
 use sha2::Sha512;
 
 /// BIP-39 fixed iteration count.
@@ -15,7 +15,7 @@ pub fn mnemonic_to_seed(mnemonic: &str, passphrase: &str) -> [u8; 64] {
     salt.push_str("mnemonic");
     salt.push_str(passphrase);
     let mut seed = [0u8; 64];
-    pbkdf2::pbkdf2_hmac::<Sha512>(
+    pbkdf2_hmac::<Sha512>(
         mnemonic.as_bytes(),
         salt.as_bytes(),
         PBKDF2_ROUNDS,

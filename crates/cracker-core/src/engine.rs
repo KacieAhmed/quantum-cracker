@@ -13,21 +13,11 @@ use crate::derive::{self, PathKind};
 use crate::pool::PoolSearch;
 
 /// All derived addresses of a matched candidate, rendered canonically.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AddressSet {
     pub eth: String,
     pub btc_p2pkh: String,
     pub btc_bech32: String,
-}
-
-impl Default for AddressSet {
-    fn default() -> Self {
-        Self {
-            eth: String::new(),
-            btc_p2pkh: String::new(),
-            btc_bech32: String::new(),
-        }
-    }
 }
 
 /// A hit: the recovered phrase, the path that matched, and every address of

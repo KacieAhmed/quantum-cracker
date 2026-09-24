@@ -2,7 +2,6 @@
 //! 2^20 walk is the CLI end-to-end run, and the corpus-space dimension tests
 //! live with the pool module).
 
-use cracker_core::derive::PathKind;
 use cracker_core::engine::{SearchConfig, Searcher, Target};
 use cracker_core::pool::{PoolSearch, WalletsFileJson};
 use cracker_core::validate::parse_target;

@@ -21,6 +21,13 @@ rayon = { workspace = true, optional = true }
 [dev-dependencies]
 hex.workspace = true
 
+# getrandom (via k256 -> elliptic-curve -> rand_core) refuses to compile for
+# wasm32-unknown-unknown without the browser "js" backend. The engine itself is
+# deterministic and never calls it; this only unifies the feature for the
+# target so the wasm check builds.
+[target.wasm32-unknown-unknown.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
 [features]
 default = []
 # Rayon-based native parallelism. Kept off by default so the crate (and the wasm

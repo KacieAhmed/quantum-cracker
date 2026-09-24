@@ -103,10 +103,10 @@ impl PoolSearch {
         }
         let mut pool = Vec::with_capacity(config.pool_words.len());
         for word in &config.pool_words {
-            pool.push(
-                bip39::word_index(word)
-                    .ok_or_else(|| bad_pool("pool word not in BIP-39 wordlist"))?,
-            );
+            let idx = bip39::word_index(word)
+                .ok_or_else(|| bad_pool("pool word not in BIP-39 wordlist"))?
+                as u16;
+            pool.push(idx);
         }
         pool.sort_unstable();
         pool.dedup();
@@ -127,9 +127,8 @@ impl PoolSearch {
     /// varying prefix position (16^5 = 2^20 for the corpus pool).
     pub fn total_prefixes(&self) -> u64 {
         let mut total: u64 = 1;
-        for pos in self.prefix_positions() {
+        for _ in self.prefix_positions() {
             total = total.saturating_mul(self.pool.len() as u64);
-            let _ = pos;
         }
         total
     }

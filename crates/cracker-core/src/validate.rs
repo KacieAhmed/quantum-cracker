@@ -66,12 +66,10 @@ fn parse_eth_hex(hex_part: &str) -> Result<[u8; 20]> {
     let has_lower = hex_part.bytes().any(|b| b.is_ascii_lowercase());
     let has_upper = hex_part.bytes().any(|b| b.is_ascii_uppercase());
     if has_lower && has_upper {
+        // EIP-55 verify: the mixed-case input must re-encode to itself exactly
+        // (a single flipped case fails with 99.9753% probability - doc 8.1).
         let expected = encoding::eth_checksum_address(&addr);
-        if expected[2..] != *hex_part.to_ascii_lowercase() {
-            // EIP-55 mismatch is a malformed input (single flipped case fails
-            // with 99.9753% probability - doc section 8.1).
-            let canonical = encoding::eth_checksum_address(&addr);
-            let _ = canonical;
+        if &expected[2..] != hex_part {
             return Err(CrackerError::MalformedAddress("EIP-55 checksum mismatch"));
         }
     }

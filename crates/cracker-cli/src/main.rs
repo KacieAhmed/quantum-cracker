@@ -12,7 +12,7 @@
 //! cracker-cli --target 0x... --start 524288 --count 4096 --workers 4
 //! ```
 
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -171,29 +171,31 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
         )));
     }
 
-    let stdout = std::io::stdout();
-    let mut out = BufWriter::new(stdout.lock());
-    let start_event = serde_json::json!({
-        "event": "start",
-        "total_prefixes": total,
-        "raw_candidates": searcher.config.pool.raw_candidates(),
-        "start": args.start,
-        "end": end,
-        "workers": args.workers,
-        "address_type": args.address_type.label(),
-        "targets": args.targets,
-    });
-    writeln!(out, "{start_event}")?;
-    out.flush()?;
+    {
+        let mut out = std::io::stdout().lock();
+        let start_event = serde_json::json!({
+            "event": "start",
+            "total_prefixes": total,
+            "raw_candidates": searcher.config.pool.raw_candidates(),
+            "start": args.start,
+            "end": end,
+            "workers": args.workers,
+            "address_type": args.address_type.label(),
+            "targets": args.targets,
+        });
+        writeln!(out, "{start_event}")?;
+        out.flush()?;
+    }
 
     // Ticker thread: emits progress lines and drains matches as they appear.
-    // It returns any matches it drained so the final tally loses nothing.
+    // Each tick takes a short-lived stdout lock (StdoutLock is !Send, and a
+    // lock held across the scan would deadlock this thread); it returns the
+    // matches it drained so the final tally loses nothing.
     let done = Arc::new(AtomicBool::new(false));
     let ticker = {
         let searcher = Arc::clone(&searcher);
         let done = Arc::clone(&done);
         let interval = Duration::from_millis(args.progress_ms);
-        let mut out = BufWriter::new(stdout.lock());
         let mut last_derived = 0u64;
         let mut last_tick = Instant::now();
         std::thread::spawn(move || {
@@ -201,12 +203,6 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
             while !done.load(Ordering::Relaxed) {
                 std::thread::sleep(interval);
                 let newly = searcher.take_matches();
-                for m in &newly {
-                    if writeln!(out, "{}", match_event(m)).is_err() {
-                        break; // stdout closed; keep tallying for the exit code
-                    }
-                }
-                drained.extend(newly);
                 let derived = searcher.progress.derived.load(Ordering::Relaxed);
                 let dt = last_tick.elapsed().as_secs_f64();
                 let rate = if dt > 0.0 {
@@ -216,16 +212,39 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
                 };
                 last_derived = derived;
                 last_tick = Instant::now();
-                let line = serde_json::json!({
-                    "event": "progress",
-                    "prefixes_done": searcher.progress.prefixes_done.load(Ordering::Relaxed),
-                    "derived": derived,
-                    "derived_per_sec": rate,
-                    "fraction_of_space": if total > 0 { derived as f64 / total as f64 } else { 0.0 },
-                    "matches": searcher.matches_found(),
-                });
-                if writeln!(out, "{line}").is_err() || out.flush().is_err() {
-                    return drained;
+                let mut ok = true;
+                {
+                    let mut out = std::io::stdout().lock();
+                    for m in &newly {
+                        if writeln!(out, "{}", match_event(m)).is_err() {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        let line = serde_json::json!({
+                            "event": "progress",
+                            "prefixes_done": searcher
+                                .progress
+                                .prefixes_done
+                                .load(Ordering::Relaxed),
+                            "derived": derived,
+                            "derived_per_sec": rate,
+                            "fraction_of_space": if total > 0 {
+                                derived as f64 / total as f64
+                            } else {
+                                0.0
+                            },
+                            "matches": searcher.matches_found(),
+                        });
+                        if writeln!(out, "{line}").is_err() || out.flush().is_err() {
+                            ok = false;
+                        }
+                    }
+                }
+                drained.extend(newly);
+                if !ok {
+                    return drained; // stdout closed; tally kept for the exit code
                 }
             }
             drained
@@ -240,30 +259,34 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
     let ticker_matches = ticker.join().unwrap_or_default();
     let final_matches = searcher.take_matches();
 
-    for m in run_matches.iter().chain(final_matches.iter()) {
-        writeln!(out, "{}", match_event(m))?;
-    }
     let all_matches = run_matches
         .into_iter()
         .chain(ticker_matches)
         .chain(final_matches)
         .collect::<Vec<_>>();
     let total_secs = elapsed.as_secs_f64();
-    let done_event = serde_json::json!({
-        "event": "done",
-        "prefixes_done": searcher.progress.prefixes_done.load(Ordering::Relaxed),
-        "derived": searcher.progress.derived.load(Ordering::Relaxed),
-        "elapsed_ms": elapsed.as_millis() as u64,
-        "derived_per_sec": if total_secs > 0.0 {
-            searcher.progress.derived.load(Ordering::Relaxed) as f64 / total_secs
-        } else {
-            0.0
-        },
-        "matches": all_matches.len(),
-        "recovered": all_matches.first().map(|m| m.mnemonic.clone()),
-    });
-    writeln!(out, "{done_event}")?;
-    out.flush()?;
+    {
+        let mut out = std::io::stdout().lock();
+        for m in &all_matches {
+            writeln!(out, "{}", match_event(m))?;
+        }
+        let derived = searcher.progress.derived.load(Ordering::Relaxed);
+        let done_event = serde_json::json!({
+            "event": "done",
+            "prefixes_done": searcher.progress.prefixes_done.load(Ordering::Relaxed),
+            "derived": derived,
+            "elapsed_ms": elapsed.as_millis() as u64,
+            "derived_per_sec": if total_secs > 0.0 {
+                derived as f64 / total_secs
+            } else {
+                0.0
+            },
+            "matches": all_matches.len(),
+            "recovered": all_matches.first().map(|m| m.mnemonic.clone()),
+        });
+        writeln!(out, "{done_event}")?;
+        out.flush()?;
+    }
 
     Ok(!all_matches.is_empty())
 }

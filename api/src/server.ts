@@ -139,6 +139,24 @@ export async function buildApp(
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
+  // A bodyless POST (cancel) may still declare a JSON content-type; the
+  // default parser rejects that with a 400 (FST_ERR_CTP_EMPTY_JSON_BODY)
+  // before the route handler runs. Treat an empty payload as no body
+  // instead — malformed JSON still fails validation with a 400.
+  app.addContentTypeParser<string>(
+    "application/json",
+    { parseAs: "string" },
+    (_req, body, done) => {
+      if (body.trim().length === 0) return done(null, undefined);
+      try {
+        done(null, JSON.parse(body));
+      } catch (err) {
+        (err as Error & { statusCode?: number }).statusCode = 400;
+        done(err as Error, undefined);
+      }
+    },
+  );
+
   let corpus: CorpusDoc | null = options.corpus ?? null;
   const sysInfo = options.systemInfoFn ?? systemInfo;
   const clients = new Set<WebSocket>();

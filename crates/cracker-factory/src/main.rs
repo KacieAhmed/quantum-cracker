@@ -857,10 +857,21 @@ mod tests {
         // then surfaces the missing-file error with the exact path).
         let p = resolve_engine(Some(&PathBuf::from("/nonexistent/cracker-cli"))).unwrap();
         assert_eq!(p, PathBuf::from("/nonexistent/cracker-cli"));
-        assert!(
-            resolve_engine(None).is_ok(),
-            "dev checkout should find the built engine or fail with the guidance error"
-        );
+        // Hermetic fallback contract: whether or not this machine has a built
+        // engine (CI has none — `cargo test` does not build sibling binaries),
+        // the fallback must either resolve to an existing file or fail with
+        // the guidance error. Never a silent or empty result.
+        match resolve_engine(None) {
+            Ok(found) => assert!(
+                found.exists(),
+                "resolved engine path must exist: {}",
+                found.display()
+            ),
+            Err(guidance) => assert!(
+                guidance.contains("cracker-cli not found") && guidance.contains("--cracker-cli"),
+                "expected the guidance error, got: {guidance}"
+            ),
+        }
     }
 
     #[test]

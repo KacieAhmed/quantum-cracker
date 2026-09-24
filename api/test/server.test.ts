@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -327,4 +327,44 @@ describe("api server", () => {
       await app.close();
     }
   }, 20000);
+});
+
+describe("static serving (single-port hosting)", () => {
+  it("serves the console, keeps API routes first, and SPA-falls-back", async () => {
+    const staticDir = await mkdtemp(path.join(os.tmpdir(), "qcracker-static-"));
+    await writeFile(
+      path.join(staticDir, "index.html"),
+      "<!doctype html><title>cracker console</title>",
+    );
+    const { app } = await makeApp({ staticDir });
+    try {
+      // The exact API routes beat the static wildcard.
+      const system = await app.inject({ method: "GET", url: "/system" });
+      expect(system.statusCode).toBe(200);
+      expect(system.json()).toHaveProperty("safeMaxWorkers");
+
+      // The console is served at / and via the SPA fallback.
+      const home = await app.inject({
+        method: "GET",
+        url: "/",
+        headers: { accept: "text/html" },
+      });
+      expect(home.statusCode).toBe(200);
+      expect(home.body).toContain("cracker console");
+      const spa = await app.inject({
+        method: "GET",
+        url: "/unknown/page",
+        headers: { accept: "text/html" },
+      });
+      expect(spa.statusCode).toBe(200);
+      expect(spa.body).toContain("cracker console");
+
+      // Non-page misses stay JSON 404s.
+      const apiMiss = await app.inject({ method: "GET", url: "/nope" });
+      expect(apiMiss.statusCode).toBe(404);
+      expect(apiMiss.json()).toEqual({ error: "not found" });
+    } finally {
+      await app.close();
+    }
+  });
 });

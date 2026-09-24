@@ -1,0 +1,8 @@
+# Obvious repo policy for KacieAhmed/quantum-cracker
+branches:
+  default: main
+merge:
+  method: merge
+  requireHumanMerge: true
+setup:
+  emptyRepo: true

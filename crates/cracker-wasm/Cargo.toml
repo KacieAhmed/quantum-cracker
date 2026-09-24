@@ -1,0 +1,14 @@
+[package]
+name = "cracker-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "wasm-bindgen wrapper exposing the cracker engine (start/poll/stop) for browser Web Workers"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cracker-core = { path = "../cracker-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }

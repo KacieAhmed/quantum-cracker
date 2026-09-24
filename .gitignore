@@ -9,3 +9,4 @@ build/
 dist/
 result.json
 sweep.json
+/target

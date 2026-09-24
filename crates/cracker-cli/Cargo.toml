@@ -1,0 +1,15 @@
+[package]
+name = "cracker-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Native CLI for the classical cracker engine: streams JSON progress to stdout and exits with the recovered phrase"
+
+[[bin]]
+name = "cracker-cli"
+path = "src/main.rs"
+
+[dependencies]
+cracker-core = { path = "../cracker-core", features = ["parallel"] }
+clap.workspace = true
+rayon.workspace = true
+serde_json.workspace = true

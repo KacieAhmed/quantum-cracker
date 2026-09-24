@@ -1,0 +1,28 @@
+[package]
+name = "cracker-core"
+version = "0.1.0"
+edition = "2021"
+description = "Classical BIP-39 seed-phrase cracker engine: derivation, validation, pooled enumeration, parallel scan"
+
+[dependencies]
+sha2.workspace = true
+hmac.workspace = true
+pbkdf2.workspace = true
+ripemd.workspace = true
+k256.workspace = true
+tiny-keccak.workspace = true
+bs58.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+hex.workspace = true
+
+[features]
+default = []
+# Rayon-based native parallelism. Kept off by default so the crate (and the wasm
+# wrapper) build for wasm32-unknown-unknown, which has no threads.
+parallel = ["dep:rayon"]

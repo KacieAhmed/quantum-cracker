@@ -1,0 +1,209 @@
+{
+  "meta": {
+    "generated": "2026-09-24",
+    "library_versions": {
+      "mnemonic": "0.21",
+      "bip_utils": "2.12.2",
+      "eth-account": "0.14.0",
+      "coincurve": "21.0.0",
+      "pycryptodome": "3.23.0"
+    },
+    "python": "3.13.14",
+    "cross_check": "every seed via mnemonic lib AND spec PBKDF2; master keys via bip_utils AND manual BIP-32; ETH via bip_utils AND eth_account; BTC P2PKH via bip_utils AND manual base58check; BTC P2WPKH via bip_utils AND manual derivation + BIP-173 reference bech32 (sipa/bech32, passes its own 5-test suite)",
+    "security_note": "throwaway demo wallets generated for testing only; never hold real funds"
+  },
+  "wallets": [
+    {
+      "mnemonic": "globe virus marble wing hedgehog act sponsor village utility praise bring popular",
+      "passphrase": "",
+      "seed_hex": "37c7fed7e7c0fab00c92b931da98c06fc60a9eadbeff921fbf5c35f40a25ae6b7dbd5fc2c07bdf416306130933f67d7431c774c45dead2cd6299bf097f2f4972",
+      "bip32_master_xprv": "xprv9s21ZrQH143K4CXV58z3bDHmLCYBTBmeUtwAC39fVAbvbdB3Y8jf1jrPvPCBaw1VFH1q8dFuLbVGGMGAgKtJ5QYLHkLHxfMePiSmBb3Vjoc",
+      "bip32_master_xpub": "xpub661MyMwAqRbcGgbxBAX3xMEVtENfreVVr7rkzRZH3W8uURWC5g3uZYAsmd3tRL8v3TBrbGPz9kpK7BEcRqLBVsRi7PCyVg19zQ6ujSuzhov",
+      "eth": {
+        "path": "m/44'/60'/0'/0/0",
+        "address": "0x262B24744833FF3c28e174A1b7A5094C3428008b",
+        "private_key_hex": "af20d9885f60259bd5af881b7d21e3fdb98d1ca5c163f3730a31b7d2802dedbd"
+      },
+      "btc_p2pkh": {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1D9fQWfwJftkkUWdQpeW36KFwsRxPkTiPh",
+        "wif": "KyknTfvNZFUYK2EiVgBDPpKYwDcoZt3dgVS4YXjSuuU94Sq7W37g"
+      },
+      "btc_bech32": {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qm0es3luvytx7uy2jjr56g72s0ksfd74xz4ljky"
+      },
+      "label": "demo-wallet-1"
+    },
+    {
+      "mnemonic": "sibling possible biology apart cable treat truth buyer doll mirror segment law",
+      "passphrase": "",
+      "seed_hex": "9af189554597844a3e31cbc3576f795712490c6d001605fe54bfd8a448883cc31d15125e4faefc7c1b2a19ccf1e5349728f3cd9ea4a7d32932a16dccf20defeb",
+      "bip32_master_xprv": "xprv9s21ZrQH143K25MCjzV7aRJ1o3zNCASzMfJNydGWHP1emqh8dxu1XJT7N78piK9pKRpqTe1y9VSQfmL3rw6pvsmPSyKKCHnJgazzaU2bNsj",
+      "bip32_master_xpub": "xpub661MyMwAqRbcEZRfr227wZEkM5prbdAqitDyn1g7qiYdee2HBWDG56mbDQsu7ad5CN1GDxwFLfPg188EmN6961w1CYbqVqBFJ5mCBQv8Qee",
+      "eth": {
+        "path": "m/44'/60'/0'/0/0",
+        "address": "0xD2acD51AA504b93420C7B548d7Eb4290a00efCfe",
+        "private_key_hex": "05f28ec2003218d7d0af2fe40da12a73cafa2a724f8b18a1ae23c6a872f6652d"
+      },
+      "btc_p2pkh": {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1CWbimoaQ5YJYYqL1dRXY3T6uMtycHYPYW",
+        "wif": "L5RV1dNh46ujHtNkNEs232f4Bfe9RGrjC5ckchMFwpmYgBPhWLH7"
+      },
+      "btc_bech32": {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1q92923rcn3vtudx30vtsq2u0s3c4847wc4dhund"
+      },
+      "label": "demo-wallet-2"
+    },
+    {
+      "mnemonic": "bomb arch sorry piano label mixed urge normal rebuild old fatigue sunset",
+      "passphrase": "",
+      "seed_hex": "f83130e1e208b6a974f17f730b118f5b8503ee5f7a1ff17e98cdde9b858ecb4668e0f19e91f7d38f6b0d3ed07de1cf758239378b4b862b3f057e615a82c53a98",
+      "bip32_master_xprv": "xprv9s21ZrQH143K34YZL6h2b8Zq7QAkSGS3kac7mPttBjspr3ftnq98uY23nFkEVpfvamc5sqx1Ha6gE4eMpuHkzbzrr2cUPVsfXprb5UFP768",
+      "bip32_master_xpub": "xpub661MyMwAqRbcFYd2S8E2xGWZfS1Eqj9u7oXiZnJVk5Qoir13LNTPTLLXda5DSZng7d2JudWSEMvZwKjupbsgNL8LHiYr8nHzuqfVoVp17aS",
+      "eth": {
+        "path": "m/44'/60'/0'/0/0",
+        "address": "0xD055C56332307D71888E5fb59d8B0D4B204218D5",
+        "private_key_hex": "35e9f6bb7ee37407c1c6acef95d61e7418048a93667d230d8e22d498f022ad9b"
+      },
+      "btc_p2pkh": {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "1P7gttZQ4HB3pp4onJhrJBNki1CJytiZVa",
+        "wif": "L1aRyFVCwJULN1NEj2nabR8nbjcJZYsyrg2ovjkzWN1G3REpEQgF"
+      },
+      "btc_bech32": {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qwtzdxd9gnd3fsqye5ykzedxq7g7u8hazq2rusy"
+      },
+      "label": "demo-wallet-3"
+    },
+    {
+      "mnemonic": "tennis usage police bone ordinary still raw security pipe very honey toddler",
+      "passphrase": "",
+      "seed_hex": "1932198889745a8a79a254abf5193215f44933b75280e334ab53d6c192340ad4bd8fcffc316dd17af2dde0b3a0bf795efb99e77d9cf862f36a4440181266ec86",
+      "bip32_master_xprv": "xprv9s21ZrQH143K4GTdBHrTiw1MYWfeArTXiBx1qmri1qFjByiz1DGtuaKZ9vHhGXXchRAKZZ4zt9jUy6UJY1H9dQLU3SJbHoAettgwf4pVsPQ",
+      "bip32_master_xpub": "xpub661MyMwAqRbcGkY6HKPU64x66YW8aKBP5QsceAGKaAni4n48Ykb9TNe31BY5WuQ32SncgZDm53bRcHhjp5pYYo2HeePCDmXEbq38Vb68HZ1",
+      "eth": {
+        "path": "m/44'/60'/0'/0/0",
+        "address": "0x282084023B027395a70b30aa3bD6aB74DFEE4436",
+        "private_key_hex": "87ccc1cf21983d95027346edcff4f64873cf6a2c8bf33b8385c3c7ccae6c9af5"
+      },
+      "btc_p2pkh": {
+        "path": "m/44'/0'/0'/0/0",
+        "address": "17Etaqmozf5SCkGSU9oRsL891VDkFw2D3A",
+        "wif": "L3LJekgSHtLDqVMvxHuoxq34D7vKwnpMKj1TNeTUmbJBmDmbA34G"
+      },
+      "btc_bech32": {
+        "path": "m/84'/0'/0'/0/0",
+        "address": "bc1qk3l5skgjf4cdygy9m5u90qztuqqztss4rck2f9"
+      },
+      "label": "demo-wallet-4"
+    }
+  ],
+  "pooled_demo_wallet": {
+    "mnemonic": "ocean abstract raven accident hill absent winter abstract candy abuse mango able",
+    "passphrase": "",
+    "seed_hex": "b772a1a1f752c32e219fb45b9b76c56fece9c8f3455e0e2069a1a4a220fa9c52fbe65e22af26dee183ea3df34785fef8eea289e4f222b4249c9f04e3ee78ce7c",
+    "bip32_master_xprv": "xprv9s21ZrQH143K33Yf1mQqUPf8pCoPpg6JSC6EFWDKCDVrkb2F4CPdaGR17AJSG4scPeQW9sJJL2bZDUyEPtMyruBp6D4syJWmvx6whVh4SL2",
+    "bip32_master_xpub": "xpub661MyMwAqRbcFXd87nwqqXbsNEdtE8p9oR1q3tcvkZ2qdPMPbjht84jUxS747i2h3mbTaAamMvKjnCUmpqnKM3A5GQLv1ufoHWVb1fZWr4B",
+    "eth": {
+      "path": "m/44'/60'/0'/0/0",
+      "address": "0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5",
+      "private_key_hex": "50b50be4590557b863479564584b3e8f3b31bc67e956a6eae9948b5517b61698"
+    },
+    "btc_p2pkh": {
+      "path": "m/44'/0'/0'/0/0",
+      "address": "16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp",
+      "wif": "KzJq4d4hT2xR4UzsiEc6WxXYvTsB7fmNPGe5huQaFrGkbHnXvyCj"
+    },
+    "btc_bech32": {
+      "path": "m/84'/0'/0'/0/0",
+      "address": "bc1qnm5mmckh08leuwsygfre0ls0vp7vstdju0wm57"
+    },
+    "pool_config": {
+      "description": "12-word mnemonic; words at odd positions (1,3,5,7,9,11) are fixed; words at even positions (2,4,6,8,10,12) vary over a 16-word pool = 16^6 = 2^24 = 16,777,216 candidate phrases.",
+      "pool_words": [
+        "abandon",
+        "ability",
+        "able",
+        "about",
+        "above",
+        "absent",
+        "absorb",
+        "abstract",
+        "absurd",
+        "abuse",
+        "access",
+        "accident",
+        "account",
+        "accuse",
+        "achieve",
+        "acid"
+      ],
+      "pool_wordlist_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "variable_positions_1_indexed": [
+        2,
+        4,
+        6,
+        8,
+        10,
+        12
+      ],
+      "variable_positions_0_indexed": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        11
+      ],
+      "fixed_words_1_indexed": {
+        "1": "ocean",
+        "3": "raven",
+        "5": "hill",
+        "7": "winter",
+        "9": "candy",
+        "11": "mango"
+      },
+      "target_pool_indices_1_indexed": {
+        "2": 7,
+        "4": 11,
+        "6": 5,
+        "8": 7,
+        "10": 9,
+        "12": 2
+      },
+      "search_space": {
+        "total_candidates": 16777216,
+        "expression": "16^6 = 2^24",
+        "checksum_valid_phrases": 1048576,
+        "note": "pool words are wordlist indices 0..15, so the 4 checksum bits of the 12th word select exactly one pool word for every fixed first-11-word prefix; 16^5 = 1,048,576 of the 16,777,216 candidates are valid BIP-39 mnemonics. Average brute-force walk to the target ~2^23 assemblies.",
+        "sampled_verification": "10,000 random prefixes, each had exactly one valid pool completion (PASS)"
+      },
+      "derivation_paths": {
+        "eth": "m/44'/60'/0'/0/0",
+        "btc_p2pkh": "m/44'/0'/0'/0/0",
+        "btc_bech32": "m/84'/0'/0'/0/0"
+      }
+    }
+  }
+}

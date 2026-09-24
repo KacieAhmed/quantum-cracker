@@ -1,0 +1,145 @@
+{
+  "runId": "run_mug683hd_kvt7uk",
+  "status": "matched",
+  "chain": "ethereum",
+  "mode": "classic",
+  "address": "0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5",
+  "workersRequested": 8,
+  "lanes": [
+    {
+      "id": 0,
+      "start": 0,
+      "end": 131072,
+      "prefixesDone": 112767,
+      "derived": 112767,
+      "rate": 719.5883292735292,
+      "fraction": 0.8603439331054688,
+      "frontierPrefix": 112766,
+      "frontierPhrase": "ocean ability raven accident hill absurd winter abstract candy achieve mango abuse",
+      "status": "error"
+    },
+    {
+      "id": 1,
+      "start": 131072,
+      "end": 393216,
+      "prefixesDone": 112162,
+      "derived": 112162,
+      "rate": 695.5935980491527,
+      "fraction": 0.42786407470703125,
+      "frontierPrefix": 243233,
+      "frontierPhrase": "ocean about raven accident hill absorb winter able candy ability mango accident",
+      "status": "error"
+    },
+    {
+      "id": 2,
+      "start": 262144,
+      "end": 655360,
+      "prefixesDone": 113582,
+      "derived": 113582,
+      "rate": 711.5885708737379,
+      "fraction": 0.2888539632161458,
+      "frontierPrefix": 375725,
+      "frontierPhrase": "ocean absent raven accident hill accident winter access candy accuse mango ability",
+      "status": "error"
+    },
+    {
+      "id": 3,
+      "start": 393216,
+      "end": 917504,
+      "prefixesDone": 111994,
+      "derived": 111994,
+      "rate": 471.72185204027556,
+      "fraction": 0.21361160278320312,
+      "frontierPrefix": 505209,
+      "frontierPhrase": "ocean abstract raven accident hill absent winter abstract candy abuse mango able",
+      "status": "done"
+    },
+    {
+      "id": 4,
+      "start": 524288,
+      "end": 1179648,
+      "prefixesDone": 113629,
+      "derived": 113629,
+      "rate": 715.575197352941,
+      "fraction": 0.17338409423828124,
+      "frontierPrefix": 637916,
+      "frontierPhrase": "ocean abuse raven accident hill accident winter accuse candy account mango absorb",
+      "status": "error"
+    },
+    {
+      "id": 5,
+      "start": 655360,
+      "end": 1441792,
+      "prefixesDone": 113169,
+      "derived": 113169,
+      "rate": 715.5869918118059,
+      "fraction": 0.14390182495117188,
+      "frontierPrefix": 768528,
+      "frontierPhrase": "ocean accident raven accident hill access winter ability candy abandon mango acid",
+      "status": "error"
+    },
+    {
+      "id": 6,
+      "start": 786432,
+      "end": 1703936,
+      "prefixesDone": 112662,
+      "derived": 112662,
+      "rate": 715.548085588873,
+      "fraction": 0.12279183523995536,
+      "frontierPrefix": 899093,
+      "frontierPhrase": "ocean accuse raven accident hill absurd winter ability candy absent mango achieve",
+      "status": "error"
+    },
+    {
+      "id": 7,
+      "start": 917504,
+      "end": 1966080,
+      "prefixesDone": 113926,
+      "derived": 113926,
+      "rate": 723.5599771297482,
+      "fraction": 0.10864830017089844,
+      "frontierPrefix": 1031429,
+      "frontierPhrase": "ocean acid raven accident hill accuse winter abandon candy absent mango about",
+      "status": "error"
+    }
+  ],
+  "totalCandidates": 1048576,
+  "rawCandidates": 16777216,
+  "startedAt": "2026-09-24T23:36:34.465Z",
+  "finishedAt": "2026-09-24T23:39:16.816Z",
+  "elapsedMs": 162351,
+  "aggregate": {
+    "derived": 903891,
+    "derivedPerSec": 5468.762602120064,
+    "fractionOfKeyspace": 0.8620176315307617,
+    "etaSeconds": 26.456624747965886,
+    "matches": 1
+  },
+  "match": {
+    "mnemonic": "ocean abstract raven accident hill absent winter abstract candy abuse mango able",
+    "path": "eth",
+    "address": "0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5",
+    "allAddresses": {
+      "btc_bech32": "bc1qnm5mmckh08leuwsygfre0ls0vp7vstdju0wm57",
+      "btc_p2pkh": "16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp",
+      "eth": "0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5"
+    },
+    "derivationPath": "m/44'/60'/0'/0/0"
+  },
+  "quantum": null,
+  "customWallet": {
+    "targetSource": "derived-from-mnemonic",
+    "derivedAddresses": {
+      "btc_bech32": "bc1qnm5mmckh08leuwsygfre0ls0vp7vstdju0wm57",
+      "btc_p2pkh": "16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp",
+      "eth": "0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5"
+    },
+    "paths": {
+      "btc_bech32": "m/84'/0'/0'/0/0",
+      "btc_p2pkh": "m/44'/0'/0'/0/0",
+      "eth": "m/44'/60'/0'/0/0"
+    },
+    "crossCheckUsed": true,
+    "inPooledSpace": true
+  }
+}

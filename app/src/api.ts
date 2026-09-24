@@ -4,6 +4,7 @@ import type {
   CrackRequest,
   CrackStart,
   CorpusDoc,
+  DeriveResponse,
   Mode,
   SystemInfo,
   TargetVerdict,
@@ -62,6 +63,20 @@ export const getCorpus = (): Promise<CorpusDoc> => fetchJson<CorpusDoc>("/corpus
 
 export const validateAddress = (address: string): Promise<TargetVerdict> =>
   postJson<TargetVerdict>("/validate", { address });
+
+/**
+ * Derive every engine-supported address from a mnemonic the user owns.
+ * Nothing is exposed by this: the caller already holds the seed — the
+ * derivation runs through the same engine code path the search uses.
+ */
+export const deriveAddresses = (
+  mnemonic: string,
+  passphrase: string,
+): Promise<DeriveResponse> =>
+  postJson<DeriveResponse>("/derive", {
+    mnemonic,
+    ...(passphrase === "" ? {} : { passphrase }),
+  });
 
 export const startCrack = (request: CrackRequest): Promise<CrackStart> =>
   postJson<CrackStart>("/crack", request);

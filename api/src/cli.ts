@@ -17,6 +17,8 @@ export interface CliEvent {
   matches?: number;
   frontier_prefix?: number;
   frontier_phrase?: string | null;
+  /** The BIP-32 path the engine actually walked for this match. */
+  derivation_path?: string;
   match?: {
     mnemonic: string;
     path: string;
@@ -24,6 +26,26 @@ export interface CliEvent {
     all_addresses: { eth: string; btc_p2pkh: string; btc_bech32: string };
   };
   recovered?: string | null;
+}
+
+/** Output of cracker-cli --derive-mnemonic (one JSON object). */
+export interface MnemonicDerivation {
+  mnemonic: string;
+  addresses: { eth: string; btc_p2pkh: string; btc_bech32: string };
+  paths: { eth: string; btc_p2pkh: string; btc_bech32: string };
+  pool_membership: {
+    in_space: boolean;
+    total_prefixes: number;
+    raw_candidates: number;
+  };
+}
+
+/** The engine rejected the mnemonic (bad word count, unknown word, checksum). */
+export class MnemonicError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MnemonicError";
+  }
 }
 
 export interface TargetVerdict {
@@ -165,6 +187,34 @@ export async function validateAddresses(
   // The CLI exits 2 when any target is invalid; trust the per-target verdicts.
   void code;
   return verdicts;
+}
+
+/**
+ * Derive every engine-supported address from a BIP-39 mnemonic — the same
+ * derive::derive_addresses call the search engine runs per candidate, so the
+ * derived address is exactly what a search match is compared against.
+ * Throws MnemonicError (422 material) when the engine rejects the phrase.
+ */
+export async function deriveMnemonic(
+  cliPath: string,
+  mnemonic: string,
+  passphrase: string,
+  timeoutMs = 15_000,
+): Promise<MnemonicDerivation> {
+  const { stdout } = await runCapture(
+    cliPath,
+    ["--derive-mnemonic", mnemonic, "--passphrase", passphrase],
+    timeoutMs,
+  );
+  const line = stdout.split("\n").find((l) => l.trim().length > 0);
+  if (line === undefined) {
+    throw new Error("engine returned no derivation output");
+  }
+  const parsed = JSON.parse(line) as MnemonicDerivation & { error?: string };
+  if (typeof parsed.error === "string" && parsed.error.length > 0) {
+    throw new MnemonicError(parsed.error);
+  }
+  return parsed;
 }
 
 /** Cached-at-boot corpus + space info from the engine's embedded wallets.json. */

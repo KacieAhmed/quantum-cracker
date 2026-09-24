@@ -43,6 +43,20 @@ export interface MatchInfo {
   path: string;
   address: string;
   allAddresses: AllAddresses;
+  /** Canonical BIP-32 path the engine walked for this match, when known. */
+  derivationPath?: string;
+}
+
+/**
+ * Provenance of a run whose search target was derived from a user-supplied
+ * seed phrase ("test with your own wallet"). Mirrors api/src/types.ts.
+ */
+export interface CustomWalletProvenance {
+  targetSource: "derived-from-mnemonic";
+  derivedAddresses: AllAddresses;
+  paths: { eth: string; btc_p2pkh: string; btc_bech32: string };
+  crossCheckUsed: boolean;
+  inPooledSpace: boolean;
 }
 
 export type RunStatus =
@@ -77,6 +91,8 @@ export interface RunReport {
   aggregate: Aggregate | null;
   match: MatchInfo | null;
   quantum: unknown | null;
+  /** Set when the run's target was derived from a user-supplied seed phrase. */
+  customWallet?: CustomWalletProvenance | null;
 }
 
 /** WS messages the API broadcasts (GET /ws). */
@@ -132,10 +148,18 @@ export interface TargetVerdict {
 export interface CrackRequest {
   chain: Chain;
   mode: Mode;
-  address: string;
+  /** Corpus-mode target; required unless customWallet is supplied. */
+  address?: string;
   workers?: number;
   force?: boolean;
   quantumBits?: number;
+  /** "Test with your own wallet": the target is derived from this mnemonic. */
+  customWallet?: {
+    mnemonic: string;
+    passphrase?: string;
+    /** Optional cross-check — must equal the derived address. */
+    expectedAddress?: string;
+  };
 }
 
 export interface ClassicStart {
@@ -149,6 +173,8 @@ export interface ClassicStart {
   safeMaxWorkers: number;
   cores: number;
   forced: boolean;
+  customWallet?: CustomWalletProvenance;
+  targetNote?: string;
 }
 
 export interface QuantumStart {
@@ -156,9 +182,24 @@ export interface QuantumStart {
   mode: "quantum";
   totalCandidates: number;
   note: string;
+  customWallet?: CustomWalletProvenance;
+  targetNote?: string;
 }
 
 export type CrackStart = ClassicStart | QuantumStart;
+
+// ── POST /derive ────────────────────────────────────────────────────────────
+
+export interface DeriveResponse {
+  mnemonic: string;
+  addresses: AllAddresses;
+  paths: { eth: string; btc_p2pkh: string; btc_bech32: string };
+  poolMembership: {
+    inSpace: boolean;
+    totalPrefixes: number;
+    rawCandidates: number;
+  };
+}
 
 export interface Cancelled {
   runId: string;

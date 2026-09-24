@@ -11,9 +11,10 @@ import {
 import { FALLBACK_PER_CORE_RATE, estimateAggregateRate, etaSeconds } from "./estimate";
 import { TICKER_LIMIT, VALIDATE_DEBOUNCE_MS } from "./constants";
 import { emptyRunUiState, foldMessage, type RunUiState } from "./reducer";
-import type { Chain, CorpusDoc, Mode, ServerMessage, SystemInfo, TargetVerdict } from "./types";
+import type { Chain, CorpusDoc, DeriveResponse, Mode, ServerMessage, SystemInfo, TargetVerdict } from "./types";
 import { Header } from "./components/Header";
 import { AddressPanel } from "./components/AddressPanel";
+import { CustomWalletPanel } from "./components/CustomWalletPanel";
 import { WorkerSlider } from "./components/WorkerSlider";
 import { QuantumConfig } from "./components/QuantumConfig";
 import { StatsBar } from "./components/StatsBar";
@@ -83,6 +84,13 @@ export default function App() {
   const [quantumBits, setQuantumBits] = useState(8);
   const [startError, setStartError] = useState<string | null>(null);
   const [tickerPhrases, setTickerPhrases] = useState<string[]>([]);
+  const [walletMode, setWalletMode] = useState(false);
+  const [customWallet, setCustomWallet] = useState<{
+    mnemonic: string;
+    passphrase: string;
+    expectedAddress: string;
+    derived: DeriveResponse | null;
+  } | null>(null);
   const touchedWorkersRef = useRef(false);
 
   const ui = useRunFeed();
@@ -180,14 +188,33 @@ export default function App() {
   const start = async (): Promise<void> => {
     setStartError(null);
     try {
-      await startCrack({
-        chain,
-        mode,
-        address: address.trim(),
-        ...(mode === "classic"
-          ? { workers, force }
-          : { quantumBits: Math.min(quantumBits, QUANTUM_BITS_MAX) }),
-      });
+      if (walletMode && customWallet !== null && customWallet.derived !== null) {
+        await startCrack({
+          chain,
+          mode,
+          // The derived address is the only target; a typed address is only
+          // a cross-check, and no freeform address is ever sent.
+          customWallet: {
+            mnemonic: customWallet.mnemonic,
+            passphrase: customWallet.passphrase,
+            ...(customWallet.expectedAddress === ""
+              ? {}
+              : { expectedAddress: customWallet.expectedAddress }),
+          },
+          ...(mode === "classic"
+            ? { workers, force }
+            : { quantumBits: Math.min(quantumBits, QUANTUM_BITS_MAX) }),
+        });
+      } else {
+        await startCrack({
+          chain,
+          mode,
+          address: address.trim(),
+          ...(mode === "classic"
+            ? { workers, force }
+            : { quantumBits: Math.min(quantumBits, QUANTUM_BITS_MAX) }),
+        });
+      }
       // A fresh run: clear stale outcome cards and the ticker.
       lastRunIdRef.current = null;
       setTickerPhrases([]);
@@ -214,7 +241,9 @@ export default function App() {
     totalCandidates === null ? null : etaSeconds(totalCandidates, 0, estimatedRate);
 
   const canStart =
-    !running && verdict?.valid === true && address.trim() !== "" && systemError === null;
+    !running && systemError === null && (walletMode
+      ? customWallet !== null && customWallet.derived !== null
+      : verdict?.valid === true && address.trim() !== "");
 
   const aggregate = report?.aggregate ?? null;
 
@@ -228,17 +257,45 @@ export default function App() {
         disabled={running}
       />
       <main>
-        <div className="config-grid">
-          <AddressPanel
-            address={address}
-            onAddress={setAddress}
-            verdict={verdict}
-            checking={checking}
-            corpus={corpus}
-            corpusError={corpusError}
-            onDemoWallet={pickDemoWallet}
+        <div className="mode-switch" role="radiogroup" aria-label="Target source">
+          <button
+            type="button"
+            className={walletMode ? "mode-btn" : "mode-btn active"}
+            onClick={() => setWalletMode(false)}
             disabled={running}
-          />
+          >
+            Demo corpus
+          </button>
+          <button
+            type="button"
+            className={walletMode ? "mode-btn active" : "mode-btn"}
+            onClick={() => setWalletMode(true)}
+            disabled={running}
+          >
+            Your own wallet
+          </button>
+        </div>
+        <div className="config-grid">
+          {walletMode ? (
+            <CustomWalletPanel
+              chain={chain}
+              disabled={running}
+              onDerived={(mnemonic, passphrase, expectedAddress, derived) =>
+                setCustomWallet({ mnemonic, passphrase, expectedAddress, derived })
+              }
+            />
+          ) : (
+            <AddressPanel
+              address={address}
+              onAddress={setAddress}
+              verdict={verdict}
+              checking={checking}
+              corpus={corpus}
+              corpusError={corpusError}
+              onDemoWallet={pickDemoWallet}
+              disabled={running}
+            />
+          )}
           {mode === "classic" ? (
             <WorkerSlider
               workers={workers}
@@ -263,7 +320,13 @@ export default function App() {
 
         <div className="start-row">
           <button type="button" className="btn primary" onClick={start} disabled={!canStart}>
-            {mode === "classic" ? "Start search" : "Run toy simulation"}
+            {walletMode
+              ? mode === "classic"
+                ? "Search for MY wallet"
+                : "Run toy simulation on MY wallet"
+              : mode === "classic"
+                ? "Start search"
+                : "Run toy simulation"}
           </button>
           {running && (
             <button type="button" className="btn danger" onClick={cancel}>
@@ -289,7 +352,9 @@ export default function App() {
               measured={aggregate !== null}
             />
             {report.mode === "classic" && <LaneGrid lanes={report.lanes} />}
-            {report.mode === "classic" && <Ticker phrases={tickerPhrases} />}
+            {report.mode === "classic" && (
+              <Ticker phrases={tickerPhrases} matched={report.status === "matched"} />
+            )}
           </>
         )}
 

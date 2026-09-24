@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   Aggregate,
   Chain,
+  CustomWalletProvenance,
   LaneState,
   MatchInfo,
   Mode,
@@ -22,6 +23,7 @@ export interface StartClassicParams {
   totalCandidates: number;
   rawCandidates: number;
   progressMs: number;
+  customWallet?: CustomWalletProvenance | null;
 }
 
 export interface StartQuantumParams {
@@ -29,6 +31,7 @@ export interface StartQuantumParams {
   chain: Chain;
   address: string;
   bits: number;
+  customWallet?: CustomWalletProvenance | null;
 }
 
 /** Broadcast sink (the server wires this to every connected WebSocket). */
@@ -104,6 +107,7 @@ export class RunManager {
       totalCandidates: params.totalCandidates,
       rawCandidates: params.rawCandidates,
       lanes: params.ranges.map((r, i) => emptyLane(i, r)),
+      customWallet: params.customWallet ?? null,
     });
     const run: ActiveRun = {
       report,
@@ -151,6 +155,7 @@ export class RunManager {
       totalCandidates: 2 ** params.bits,
       rawCandidates: 2 ** params.bits,
       lanes: [lane],
+      customWallet: params.customWallet ?? null,
     });
     const run: ActiveRun = {
       report,
@@ -242,6 +247,7 @@ export class RunManager {
           path: m.path,
           address: m.address,
           allAddresses: m.all_addresses,
+          derivationPath: event.derivation_path,
         };
         if (run.status === "running") {
           run.status = "matched";
@@ -365,6 +371,7 @@ function newReport(args: {
   totalCandidates: number;
   rawCandidates: number;
   lanes: Array<LaneState & { start: number; end: number }>;
+  customWallet: CustomWalletProvenance | null;
 }): RunReport {
   return {
     runId: args.runId,
@@ -382,6 +389,7 @@ function newReport(args: {
     aggregate: null,
     match: null,
     quantum: null,
+    customWallet: args.customWallet,
   };
 }
 

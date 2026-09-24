@@ -12,3 +12,4 @@ sweep.json
 /target
 node_modules/
 .vite/
+api/runs/

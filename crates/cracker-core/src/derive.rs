@@ -41,6 +41,16 @@ impl PathKind {
         }
     }
 
+    /// The canonical BIP-32 path string this kind derives along — the exact
+    /// path surfaced in match events and external-verification recipes.
+    pub fn bip32_path(self) -> &'static str {
+        match self {
+            PathKind::Eth => "m/44'/60'/0'/0/0",
+            PathKind::BtcP2pkh => "m/44'/0'/0'/0/0",
+            PathKind::BtcBech32 => "m/84'/0'/0'/0/0",
+        }
+    }
+
     /// Canonical string form of a 20-byte address of this kind (doc section
     /// 9.2: compare canonical forms by exact equality).
     pub fn format_address(self, bytes: &[u8; 20]) -> String {
@@ -147,6 +157,29 @@ mod tests {
             encoding::wif_encode(&btc_leaf.key, true),
             "L4p2b9VAf8k5aUahF1JCJUzZkgNEAqLfq8DDdQiyAprQAKSbu8hf"
         );
+    }
+
+    #[test]
+    fn bip32_path_strings_match_the_derivation_indices() {
+        // The displayed path string must be the path the engine actually
+        // walks: parse it back and compare against PathKind::path().
+        for kind in [PathKind::Eth, PathKind::BtcP2pkh, PathKind::BtcBech32] {
+            let parsed: Vec<u32> = kind
+                .bip32_path()
+                .split('/')
+                .skip(1)
+                .map(|step| {
+                    let hardened = step.ends_with('\'');
+                    let idx: u32 = step.trim_end_matches('\'').parse().unwrap();
+                    if hardened {
+                        idx | HARDENED_OFFSET
+                    } else {
+                        idx
+                    }
+                })
+                .collect();
+            assert_eq!(parsed, kind.path(), "path string for {kind:?}");
+        }
     }
 
     #[test]

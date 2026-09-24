@@ -17,14 +17,23 @@ import { estimateAggregateRate, etaSeconds } from "./estimate.js";
 import { systemInfo } from "./system.js";
 import { splitSpace } from "./ranges.js";
 import {
+  deriveMnemonic,
   listTargets,
   validateAddresses,
+  MnemonicError,
   type CorpusDoc,
+  type MnemonicDerivation,
   type TargetVerdict,
 } from "./cli.js";
 import { RunManager } from "./runManager.js";
 import { makeQuantumRunner } from "./quantum.js";
-import type { Chain, Mode, RunReport, ServerMessage } from "./types.js";
+import type {
+  Chain,
+  CustomWalletProvenance,
+  Mode,
+  RunReport,
+  ServerMessage,
+} from "./types.js";
 import type { WebSocket } from "ws";
 
 export interface BuildAppOptions {
@@ -49,18 +58,34 @@ export interface BuildAppOptions {
   staticDir?: string;
 }
 
+interface CustomWalletBody {
+  /** A BIP-39 mnemonic the user OWNS; its derived address becomes the target. */
+  mnemonic: string;
+  /** Optional BIP-39 passphrase (default empty, the real-wallet default). */
+  passphrase?: string;
+  /**
+   * Optional cross-check: must equal the address the mnemonic derives.
+   * Never used as the search target — a freeform third-party address is
+   * never accepted.
+   */
+  expectedAddress?: string;
+}
+
 interface CrackBody {
   chain: Chain;
   mode: Mode;
-  address: string;
+  /** Corpus-mode target. Required unless customWallet supplies the mnemonic. */
+  address?: string;
   workers?: number;
   force?: boolean;
   quantumBits?: number;
+  /** "Test with your own wallet": derive the target from this mnemonic. */
+  customWallet?: CustomWalletBody;
 }
 
 const crackBodySchema = {
   type: "object",
-  required: ["chain", "mode", "address"],
+  required: ["chain", "mode"],
   properties: {
     chain: { type: "string", enum: ["bitcoin", "ethereum"] },
     mode: { type: "string", enum: ["classic", "quantum"] },
@@ -68,8 +93,44 @@ const crackBodySchema = {
     workers: { type: "integer", minimum: 1, maximum: 64 },
     force: { type: "boolean" },
     quantumBits: { type: "integer", minimum: 2, maximum: QUANTUM_BITS_MAX },
+    customWallet: {
+      type: "object",
+      required: ["mnemonic"],
+      properties: {
+        mnemonic: { type: "string", minLength: 1 },
+        passphrase: { type: "string" },
+        expectedAddress: { type: "string", minLength: 1 },
+      },
+    },
   },
 } as const;
+
+/** Engine kind labels per chain, shared by the corpus and custom flows. */
+const KIND_FOR_CHAIN: Record<Chain, string[]> = {
+  ethereum: ["eth"],
+  bitcoin: ["btc-p2pkh", "btc-bech32"],
+};
+
+/** Which engine-derived address field serves each chain. */
+function derivedAddressForChain(
+  derivation: MnemonicDerivation,
+  chain: Chain,
+): string {
+  return chain === "ethereum"
+    ? derivation.addresses.eth
+    : derivation.addresses.btc_p2pkh;
+}
+
+/**
+ * Honest-scaling note for custom-wallet runs: the pooled 2^24 keyspace is a
+ * bounded demo space, so a wallet outside it can only ever end exhausted.
+ * Stated up front, not discovered at "exhausted".
+ */
+function boundedKeyspaceNote(wallet: CustomWalletProvenance): string {
+  return wallet.inPooledSpace
+    ? "This seed phrase lies inside the bounded pooled demo keyspace — the run can genuinely match it."
+    : "Your wallet's address lies OUTSIDE the bounded pooled demo keyspace — the run stays bounded and will end exhausted without a match. That is the honest demonstration of keyspace scale, not a failure of your wallet.";
+}
 
 export async function buildApp(
   options: BuildAppOptions,
@@ -173,6 +234,61 @@ export async function buildApp(
     },
   );
 
+  /**
+   * Derive every engine-supported address from a BIP-39 mnemonic the user
+   * owns ("test with your own wallet"). Same derivation code path the search
+   * engine runs per candidate; nothing is exposed — the caller already holds
+   * the seed. The response is the ONLY supported way to obtain a target for
+   * custom runs; /crack re-derives from the mnemonic in the same request.
+   */
+  app.post(
+    "/derive",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["mnemonic"],
+          properties: {
+            mnemonic: { type: "string", minLength: 1 },
+            passphrase: { type: "string" },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { mnemonic, passphrase } = req.body as {
+        mnemonic: string;
+        passphrase?: string;
+      };
+      try {
+        const derivation = await deriveMnemonic(
+          options.cliPath,
+          mnemonic,
+          passphrase ?? "",
+        );
+        return {
+          mnemonic: derivation.mnemonic,
+          addresses: derivation.addresses,
+          paths: derivation.paths,
+          poolMembership: {
+            inSpace: derivation.pool_membership.in_space,
+            totalPrefixes: derivation.pool_membership.total_prefixes,
+            rawCandidates: derivation.pool_membership.raw_candidates,
+          },
+        };
+      } catch (err) {
+        if (err instanceof MnemonicError) {
+          return reply
+            .code(422)
+            .send({ error: `invalid seed phrase: ${err.message}` });
+        }
+        return reply
+          .code(503)
+          .send({ error: `engine unavailable: ${String(err)}` });
+      }
+    },
+  );
+
   app.get("/ws", { websocket: true }, (socket) => {
     clients.add(socket);
     // Late subscribers (page refresh) get the current state immediately.
@@ -196,38 +312,117 @@ export async function buildApp(
         });
       }
 
-      // Engine-backed validation: malformed fails decode here.
-      let verdict: TargetVerdict;
-      try {
-        verdict =
-          (await validateAddresses(options.cliPath, [body.address]))[0] ?? {
-            target: body.address,
-            valid: false,
-            error: "engine returned no verdict",
-          };
-      } catch (err) {
-        return reply
-          .code(503)
-          .send({ error: `engine unavailable: ${String(err)}` });
-      }
-      if (!verdict.valid) {
-        return reply.code(422).send({
-          error: verdict.error ?? "invalid address",
-          verdict,
-        });
-      }
+      // Resolve the search target. Custom-wallet mode: the target is ALWAYS
+      // derived from the mnemonic supplied in this same request — a freeform
+      // third-party address is never accepted, and a typed address is only a
+      // cross-check that must match the derivation. Corpus mode: an explicit
+      // bundled-corpus address, engine-validated.
+      let targetAddress: string;
+      let targetKind: string;
+      let customWallet: CustomWalletProvenance | null = null;
 
-      // The requested chain must agree with the address's decoded kind.
-      const kind = verdict.kind ?? "";
-      const kindForChain: Record<Chain, string[]> = {
-        ethereum: ["eth"],
-        bitcoin: ["btc-p2pkh", "btc-bech32"],
-      };
-      if (!kindForChain[body.chain].includes(kind)) {
-        return reply.code(422).send({
-          error: `address is a ${kind} address — switch the chain toggle or use a ${body.chain} address`,
-          verdict,
-        });
+      if (body.customWallet !== undefined) {
+        let derivation: MnemonicDerivation;
+        try {
+          derivation = await deriveMnemonic(
+            options.cliPath,
+            body.customWallet.mnemonic,
+            body.customWallet.passphrase ?? "",
+          );
+        } catch (err) {
+          if (err instanceof MnemonicError) {
+            return reply.code(422).send({
+              error: `invalid seed phrase: ${err.message}`,
+            });
+          }
+          return reply
+            .code(503)
+            .send({ error: `engine unavailable: ${String(err)}` });
+        }
+        targetAddress = derivedAddressForChain(derivation, body.chain);
+        targetKind = body.chain === "ethereum" ? "eth" : "btc-p2pkh";
+
+        // Optional cross-check: well-formed, then must equal the derivation.
+        const expected = body.customWallet.expectedAddress?.trim();
+        if (expected !== undefined && expected.length > 0) {
+          let checkVerdict: TargetVerdict;
+          try {
+            checkVerdict =
+              (await validateAddresses(options.cliPath, [expected]))[0] ?? {
+                target: expected,
+                valid: false,
+                error: "engine returned no verdict",
+              };
+          } catch (err) {
+            return reply
+              .code(503)
+              .send({ error: `engine unavailable: ${String(err)}` });
+          }
+          if (!checkVerdict.valid) {
+            return reply.code(422).send({
+              error: `cross-check address is not a valid address: ${
+                checkVerdict.error ?? "malformed"
+              }`,
+              verdict: checkVerdict,
+            });
+          }
+          const typed = checkVerdict.normalized ?? expected;
+          if (typed.toLowerCase() !== targetAddress.toLowerCase()) {
+            return reply.code(422).send({
+              error:
+                "cross-check failed: the address you typed is not the one this seed phrase derives — the engine-derived address is always the target, a freeform third-party address is never used",
+              derivedAddress: targetAddress,
+              typedAddress: typed,
+            });
+          }
+        }
+        customWallet = {
+          targetSource: "derived-from-mnemonic",
+          derivedAddresses: derivation.addresses,
+          paths: derivation.paths,
+          crossCheckUsed: expected !== undefined && expected.length > 0,
+          inPooledSpace: derivation.pool_membership.in_space,
+        };
+      } else {
+        const address = body.address?.trim() ?? "";
+        if (address === "") {
+          return reply.code(422).send({
+            error:
+              "address is required — or supply customWallet to derive the target from your own seed phrase",
+          });
+        }
+
+        // Engine-backed validation: malformed fails decode here.
+        let verdict: TargetVerdict;
+        try {
+          verdict =
+            (await validateAddresses(options.cliPath, [address]))[0] ?? {
+              target: address,
+              valid: false,
+              error: "engine returned no verdict",
+            };
+        } catch (err) {
+          return reply
+            .code(503)
+            .send({ error: `engine unavailable: ${String(err)}` });
+        }
+        if (!verdict.valid) {
+          return reply.code(422).send({
+            error: verdict.error ?? "invalid address",
+            verdict,
+          });
+        }
+
+        // The requested chain must agree with the address's decoded kind.
+        const kind = verdict.kind ?? "";
+        if (!KIND_FOR_CHAIN[body.chain].includes(kind)) {
+          return reply.code(422).send({
+            error: `address is a ${kind} address — switch the chain toggle or use a ${body.chain} address`,
+            verdict,
+          });
+        }
+        targetAddress = verdict.normalized ?? address;
+        targetKind = kind;
       }
 
       if (body.mode === "quantum") {
@@ -237,7 +432,7 @@ export async function buildApp(
         );
         const runId = newRunId();
         const report = runManager.startQuantum(
-          { runId, chain: body.chain, address: body.address, bits },
+          { runId, chain: body.chain, address: targetAddress, bits, customWallet },
           broadcast,
         );
         return reply.code(201).send({
@@ -245,6 +440,9 @@ export async function buildApp(
           mode: "quantum",
           totalCandidates: report.totalCandidates,
           note: QUANTUM_NOTE,
+          ...(customWallet !== null
+            ? { customWallet, targetNote: boundedKeyspaceNote(customWallet) }
+            : {}),
         });
       }
 
@@ -272,12 +470,13 @@ export async function buildApp(
         {
           runId,
           chain: body.chain,
-          address: verdict.normalized ?? body.address,
-          addressType: kind,
+          address: targetAddress,
+          addressType: targetKind,
           ranges,
           totalCandidates: total,
           rawCandidates: doc.space.raw_candidates,
           progressMs: options.progressMs ?? PROGRESS_MS,
+          customWallet,
         },
         broadcast,
       );
@@ -298,6 +497,9 @@ export async function buildApp(
         safeMaxWorkers: sys.safeMaxWorkers,
         cores: sys.cores,
         forced: workers > sys.safeMaxWorkers,
+        ...(customWallet !== null
+          ? { customWallet, targetNote: boundedKeyspaceNote(customWallet) }
+          : {}),
       });
     },
   );

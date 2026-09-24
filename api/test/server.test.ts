@@ -329,6 +329,250 @@ describe("api server", () => {
   }, 20000);
 });
 
+describe("custom wallet mode (own mnemonic, derived target)", () => {
+  // Fake-CLI-valid phrases: 12 words, all known, last word ≠ "abandon".
+  // In-space rule (fixture): phrase starts with "abandon ability able".
+  const IN_SPACE =
+    "abandon ability able about above absent absorb abstract absurd abuse access accident";
+  const OUT_OF_SPACE =
+    "about ability able about above absent absorb abstract absurd abuse access accident";
+  const CHECKSUM_INVALID =
+    "abandon ability able about above absent absorb abstract absurd abuse access abandon";
+
+  async function waitForFinal(
+    app: FastifyInstance,
+    runId: string,
+    timeoutMs = 15000,
+  ): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const res = await app.inject({ method: "GET", url: `/runs/${runId}` });
+      const report = res.json() as Record<string, unknown>;
+      if (report.status !== "running") return report;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("run did not finish in time");
+  }
+
+  it("derives addresses, paths, and pool membership on /derive", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/derive",
+        payload: { mnemonic: IN_SPACE },
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.paths.eth).toBe("m/44'/60'/0'/0/0");
+      expect(body.paths.btc_bech32).toBe("m/84'/0'/0'/0/0");
+      expect(body.addresses.eth).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      expect(body.poolMembership.inSpace).toBe(true);
+
+      const out = await app.inject({
+        method: "POST",
+        url: "/derive",
+        payload: { mnemonic: OUT_OF_SPACE },
+      });
+      expect(out.statusCode).toBe(200);
+      expect(out.json().poolMembership.inSpace).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects checksum-invalid and unknown-word mnemonics with 422", async () => {
+    const { app } = await makeApp();
+    try {
+      for (const mnemonic of [CHECKSUM_INVALID, `${IN_SPACE} zebra`]) {
+        const derive = await app.inject({
+          method: "POST",
+          url: "/derive",
+          payload: { mnemonic },
+        });
+        expect(derive.statusCode).toBe(422);
+        expect(derive.json().error).toContain("invalid seed phrase");
+
+        const crack = await app.inject({
+          method: "POST",
+          url: "/crack",
+          payload: {
+            chain: "ethereum",
+            mode: "classic",
+            customWallet: { mnemonic },
+          },
+        });
+        expect(crack.statusCode).toBe(422);
+        expect(crack.json().error).toContain("invalid seed phrase");
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("pins the derived address as the classic target — never a typed address", async () => {
+    // FAKE_MATCH=0: the fixture always matches its canned ordinal otherwise.
+    process.env.FAKE_MATCH = "0";
+    const { app } = await makeApp();
+    try {
+      // A typed address must not become the target even when present.
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: POOLED_ETH,
+          workers: 1,
+          customWallet: { mnemonic: OUT_OF_SPACE },
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId, customWallet, targetNote } = started.json();
+      expect(customWallet.targetSource).toBe("derived-from-mnemonic");
+      expect(customWallet.crossCheckUsed).toBe(false);
+      expect(customWallet.inPooledSpace).toBe(false);
+      expect(targetNote).toContain("OUTSIDE the bounded pooled demo keyspace");
+
+      const report = await waitForFinal(app, runId);
+      // The run chased the DERIVED address, not POOLED_ETH, and exhausted.
+      expect(report.address).toBe(customWallet.derivedAddresses.eth);
+      expect(report.status).toBe("exhausted");
+      expect(report.match).toBeNull();
+      expect(report.customWallet.inPooledSpace).toBe(false);
+    } finally {
+      delete process.env.FAKE_MATCH;
+      await app.close();
+    }
+  }, 20000);
+
+  it("delivers a full match proof for an in-space custom wallet", async () => {
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+
+      const derive = await app.inject({
+        method: "POST",
+        url: "/derive",
+        payload: { mnemonic: IN_SPACE },
+      });
+      const derivedEth = derive.json().addresses.eth as string;
+
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          workers: 1,
+          customWallet: {
+            mnemonic: IN_SPACE,
+            expectedAddress: derivedEth,
+          },
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      expect(started.json().customWallet.crossCheckUsed).toBe(true);
+      expect(started.json().targetNote).toContain("can genuinely match it");
+
+      const doneMsg = await nextMatching((m) => m.type === "done");
+      if (doneMsg.type !== "done") throw new Error("unreachable");
+      ws.close();
+
+      const report = doneMsg.report;
+      expect(report.status).toBe("matched");
+      // Side-by-side proof: recovered phrase's derivation equals the target.
+      expect(report.match.derivationPath).toBe("m/44'/60'/0'/0/0");
+      expect(report.match.address).toBe(derivedEth);
+      expect(report.address).toBe(derivedEth);
+      expect(report.customWallet.targetSource).toBe("derived-from-mnemonic");
+      expect(report.customWallet.paths.eth).toBe("m/44'/60'/0'/0/0");
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("rejects a cross-check address that the mnemonic does not derive", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: {
+            mnemonic: IN_SPACE,
+            expectedAddress: "0x1111111111111111111111111111111111111111",
+          },
+        },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("cross-check failed");
+      expect(res.json().derivedAddress).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      expect(res.json().typedAddress).toBe(
+        "0x1111111111111111111111111111111111111111",
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("supports custom wallets in quantum mode", async () => {
+    const { app } = await makeApp({
+      runQuantumFn: async ({ bits }) => ({
+        toy: true as const,
+        result: {
+          mode: "run",
+          n_bits: bits,
+          success: true,
+          found_state: "0110",
+          target: "0110",
+          n_iterations: 2,
+          measurements: { "0110": 1024 },
+          counts: { total: 1024 },
+          seconds: 0.1,
+          simulator: "statevector",
+        },
+      }),
+    });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "quantum",
+          quantumBits: 4,
+          customWallet: { mnemonic: IN_SPACE },
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().customWallet.targetSource).toBe(
+        "derived-from-mnemonic",
+      );
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("keeps corpus mode requiring an address when no customWallet", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: { chain: "ethereum", mode: "classic" },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("customWallet");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("static serving (single-port hosting)", () => {
   it("serves the console, keeps API routes first, and SPA-falls-back", async () => {
     const staticDir = await mkdtemp(path.join(os.tmpdir(), "qcracker-static-"));

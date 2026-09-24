@@ -5,11 +5,86 @@
 //   FAKE_MATCH (default 1)         — 1: the lane owning FAKE_MATCH_ORDINAL matches
 //   FAKE_MATCH_ORDINAL (default 700)
 //   FAKE_TICKS (default 4)         — progress ticks before match/exhaustion
+//
+// --derive-mnemonic validity rules (canned mirror of the real engine):
+//   - word count must be 12 or 24 (real BIP-39: 12/15/18/21/24)
+//   - every word must be in FAKE_WORDS
+//   - a 12-word phrase ending in "abandon" fails the (fake) checksum
+//   - in-space = phrase starts with "abandon ability able"
 const args = process.argv.slice(2);
 
 function flag(name, fallback = null) {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : fallback;
+}
+
+const FAKE_WORDS = new Set([
+  "abandon", "ability", "able", "about", "above", "absent",
+  "absorb", "abstract", "absurd", "abuse", "access", "accident",
+]);
+
+// Deterministic 40-hex fake from a string (FNV-1a, zero-padded).
+function fakeHex(seed, len) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  let out = "";
+  for (let i = 0; out.length < len; i++) {
+    h = Math.imul(h ^ i, 0x01000193) >>> 0;
+    out += h.toString(16).padStart(8, "0");
+  }
+  return out.slice(0, len);
+}
+
+function deriveForTest(mnemonic) {
+  const eth = "0x" + fakeHex("eth:" + mnemonic, 40);
+  const btc_p2pkh = "1" + fakeHex("p2pkh:" + mnemonic, 26);
+  const btc_bech32 = "bc1q" + fakeHex("bech32:" + mnemonic, 38);
+  return { eth, btc_p2pkh, btc_bech32 };
+}
+
+function deriveErrorForTest(mnemonic) {
+  const words = mnemonic.trim().split(/\s+/);
+  if (!(words.length === 12 || words.length === 24)) {
+    return `invalid mnemonic word count (${words.length}) — expected 12, 15, 18, 21 or 24`;
+  }
+  const unknown = words.findIndex((w) => !FAKE_WORDS.has(w));
+  if (unknown >= 0) {
+    return `invalid mnemonic: unknown word at position ${unknown + 1}`;
+  }
+  if (words.length === 12 && words[11] === "abandon") {
+    return "invalid mnemonic: checksum failed";
+  }
+  return null;
+}
+
+function poolMembershipForTest(mnemonic) {
+  const inSpace = mnemonic.trim().startsWith("abandon ability able");
+  return { in_space: inSpace, total_prefixes: 1000, raw_candidates: 16000 };
+}
+
+if (args.includes("--derive-mnemonic")) {
+  const mnemonic = flag("derive-mnemonic", "");
+  const passphrase = flag("passphrase", "") ?? "";
+  const err = deriveErrorForTest(mnemonic);
+  if (err !== null) {
+    console.log(JSON.stringify({ error: err }));
+    process.exit(2);
+  }
+  const addresses = deriveForTest(mnemonic + "|" + passphrase);
+  console.log(JSON.stringify({
+    mnemonic,
+    addresses,
+    paths: {
+      eth: "m/44'/60'/0'/0/0",
+      btc_p2pkh: "m/44'/0'/0'/0/0",
+      btc_bech32: "m/84'/0'/0'/0/0",
+    },
+    pool_membership: poolMembershipForTest(mnemonic),
+  }));
+  process.exit(0);
 }
 
 const SPACE = Number(process.env.FAKE_SPACE ?? 1000);
@@ -97,9 +172,12 @@ const tick = setInterval(() => {
     frontier_phrase: `phrase for ordinal ${frontier}`,
   }));
   if (willMatch) {
+    const canonicalPath =
+      addressType === "eth" ? "m/44'/60'/0'/0/0" : "m/84'/0'/0'/0/0";
     console.log(JSON.stringify({
       event: "match",
-      match: { mnemonic: MATCH_MNEMONIC, path: addressType, address: target, all_addresses: MATCH_ADDRESSES },
+      derivation_path: canonicalPath,
+      match: { mnemonic: MATCH_MNEMONIC, path: canonicalPath, address: target, all_addresses: MATCH_ADDRESSES },
     }));
     clearInterval(tick);
     process.exit(0);

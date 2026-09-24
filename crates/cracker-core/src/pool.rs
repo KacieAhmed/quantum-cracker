@@ -177,6 +177,30 @@ impl PoolSearch {
         &self.passphrase
     }
 
+    /// Whether a mnemonic lies inside this pooled space: it must be
+    /// checksum-valid, match every fixed-position word, and draw every
+    /// variable-position word (including the 12th) from the pool. If all of
+    /// that holds, enumeration provably reaches the phrase — otherwise no
+    /// search over this pool can ever match it.
+    pub fn contains_mnemonic(&self, mnemonic: &str) -> bool {
+        if bip39::validate(mnemonic).is_err() {
+            return false;
+        }
+        let Some(indices) = bip39::indices_from_mnemonic(mnemonic).ok() else {
+            return false;
+        };
+        for (p, slot) in self.slots.iter().enumerate() {
+            let in_pool = match slot {
+                Some(idx) => indices[p] == *idx,
+                None => self.pool.contains(&indices[p]),
+            };
+            if !in_pool {
+                return false;
+            }
+        }
+        true
+    }
+
     /// The checksum-valid candidate for a prefix ordinal, as a phrase string.
     /// Every prefix has exactly one pool completion that passes the checksum
     /// (the pool covers each checksum nibble exactly once), so this is the
@@ -283,6 +307,70 @@ mod tests {
             mnemonic,
             "ocean abstract raven accident hill absent winter abstract candy abuse mango able"
         );
+    }
+
+    #[test]
+    fn membership_says_which_phrases_the_pool_can_reach() {
+        let pool = corpus_pool();
+        // The pooled demo phrase is provably reachable.
+        assert!(pool.contains_mnemonic(
+            "ocean abstract raven accident hill absent winter abstract candy abuse mango able"
+        ));
+
+        // Another checksum-valid completion of a different pool prefix is
+        // inside too: build it by finding the pool's unique checksum-valid
+        // 12th word for a fresh prefix (fixed words + pool words at even
+        // positions 2,4,6,8,10).
+        const POOL_WORDS: [&str; 16] = [
+            "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
+            "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
+        ];
+        let mut variant = [0u16; 12];
+        for (i, w) in [
+            "ocean", "abandon", "raven", "ability", "hill", "absent", "winter", "abstract",
+            "candy", "abuse", "mango",
+        ]
+        .iter()
+        .enumerate()
+        {
+            variant[i] = u16::try_from(bip39::word_index(w).unwrap()).unwrap();
+        }
+        let mut found_checksum_completion = false;
+        for pool_word in POOL_WORDS
+            .iter()
+            .map(|w| u16::try_from(bip39::word_index(w).unwrap()).unwrap())
+        {
+            variant[11] = pool_word;
+            if bip39::validate_indices(&variant) {
+                found_checksum_completion = true;
+                break;
+            }
+        }
+        assert!(
+            found_checksum_completion,
+            "the pool covers every checksum nibble exactly once"
+        );
+        let variant_phrase = bip39::mnemonic_from_indices(&variant).unwrap();
+        assert!(pool.contains_mnemonic(&variant_phrase));
+
+        // The famous all-zero wallet is valid but outside (fixed words differ).
+        assert!(!pool.contains_mnemonic(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ));
+        // A valid wordlist word that is not a pool word at an even position
+        // is outside ("across" is wordlist #19; the pool stops at #16).
+        assert!(!pool.contains_mnemonic(
+            "ocean across raven accident hill absent winter abstract candy abuse mango able"
+        ));
+        // A checksum failure is never inside (12th word must be the unique
+        // valid pool completion).
+        assert!(!pool.contains_mnemonic(
+            "ocean abstract raven accident hill absent winter abstract candy abuse mango about"
+        ));
+        // Wrong word count is outside.
+        assert!(!pool.contains_mnemonic(
+            "ocean abstract raven accident hill absent winter abstract candy abuse mango able extra"
+        ));
     }
 
     #[test]

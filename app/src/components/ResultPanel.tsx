@@ -32,35 +32,95 @@ function MatchCard({
   workerId,
   target,
   chain,
+  customWallet,
 }: {
   match: MatchInfo;
   workerId: number | null;
   target: string;
   chain: Chain;
+  customWallet: RunReport["customWallet"];
 }) {
   const verified = featuredAddresses(match, chain).some(
     (a) => a.value.toLowerCase() === target.toLowerCase(),
   );
+  const derivationPath = match.derivationPath ?? match.path;
   return (
     <section className="card result matched" aria-label="Match found">
       <h2>
-        ✓ Match found
+        ✓ Match found — valid seed phrase
         {workerId !== null && <span className="result-sub"> (lane {workerId})</span>}
       </h2>
+      <p className="note">
+        This is the ONLY valid seed phrase in this run. Every phrase in the
+        "Recently tested" list was tested and failed; this one is the proof.
+      </p>
+      <div className="proof-grid">
+        <div className="proof-cell recovered">
+          <span className="proof-label">recovered seed phrase</span>
+          <span className="kv-value mono phrase">{match.mnemonic}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">address derived from it (path {derivationPath})</span>
+          <span className="kv-value mono">
+            {chain === "ethereum" ? match.allAddresses.eth : match.allAddresses.btc_p2pkh}
+          </span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">target address (what the run searched for)</span>
+          <span className="kv-value mono">{target}</span>
+        </div>
+      </div>
       <div className="kv">
-        <span className="kv-key">recovered seed phrase</span>
-        <span className="kv-value mono phrase">{match.mnemonic}</span>
-        <span className="kv-key">derivation path</span>
-        <span className="kv-value mono">{match.path}</span>
+        <span className="kv-key">derivation path the engine walked</span>
+        <span className="kv-value mono">{derivationPath}</span>
         {featuredAddresses(match, chain).map((a) => (
-          <FragmentRow key={a.label} label={a.label} value={a.value} />
+          <FragmentRow key={a.label} label={`${a.label} (all paths)`} value={a.value} />
         ))}
       </div>
-      <p className="verdict ok">
-        {verified
-          ? "✓ engine-verified: the derived address equals the target"
-          : "⚠ derived addresses recorded — target comparison inconclusive, inspect the run report"}
-      </p>
+      {verified && (
+        <p className="verdict ok proof-verdict">
+          ✓ PROVEN: the address derived from the recovered phrase at{" "}
+          {derivationPath} equals the target address — that equality is the
+          proof, not a heuristic.
+        </p>
+      )}
+      {!verified && (
+        <p className="verdict bad proof-verdict">
+          ⚠ derived addresses recorded — target comparison inconclusive, inspect
+          the run report.
+        </p>
+      )}
+      {customWallet !== null && customWallet !== undefined && (
+        <p className="verdict ok">
+          Self-referential verification: this run's target was YOUR wallet — the
+          address derived from the seed phrase you pasted (cross-check{" "}
+          {customWallet.crossCheckUsed ? "supplied and matched" : "not supplied"}).
+          You already hold that seed, so nothing was exposed by testing it.
+        </p>
+      )}
+      <div className="verify-recipe">
+        <h3>Verify externally (recommended)</h3>
+        <ol>
+          <li>
+            Copy the recovered seed phrase above into any standard open-source
+            BIP-39 derivation tool (e.g. the well-known iancoleman.io/bip39
+            tool, run offline) — you can also do this with your own wallet
+            software.
+          </li>
+          <li>
+            Set the derivation path to exactly{" "}
+            <code className="mono">{derivationPath}</code> — the path the engine
+            actually used for this match
+            {chain === "ethereum" ? "" : " (or m/44'/0'/0'/0/0 for the P2PKH address shown)"}.
+          </li>
+          <li>
+            Confirm the tool's{" "}
+            {chain === "ethereum" ? "Ethereum" : "Bitcoin P2PKH"} address equals
+            the target address above. If it does, the match is real — the same
+            derivation any wallet performs.
+          </li>
+        </ol>
+      </div>
       <Infeasibility />
     </section>
   );
@@ -152,6 +212,7 @@ export function ResultPanel({ ui, chain }: ResultPanelProps) {
           workerId={ui.match?.workerId ?? null}
           target={report.address}
           chain={chain}
+          customWallet={report.customWallet ?? null}
         />
       ) : null;
     case "exhausted":

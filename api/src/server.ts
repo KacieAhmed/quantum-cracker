@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -40,6 +41,12 @@ export interface BuildAppOptions {
   runQuantumFn?: (params: { bits: number }) => Promise<unknown>;
   /** Injectable for tests: deterministic host capabilities. */
   systemInfoFn?: () => ReturnType<typeof systemInfo>;
+  /**
+   * When set, the API also serves this directory's built console over the
+   * same port (single-port hosting). API routes keep precedence over the
+   * static wildcard; unmatched page requests fall back to index.html.
+   */
+  staticDir?: string;
 }
 
 interface CrackBody {
@@ -307,6 +314,19 @@ export async function buildApp(
   app.addHook("onClose", async () => {
     runManager.cancel();
   });
+
+  if (options.staticDir) {
+    await app.register(fastifyStatic, { root: options.staticDir });
+    // SPA fallback: a page load for an unknown path gets the console;
+    // everything else (bad API paths, bad methods) stays a JSON 404.
+    app.setNotFoundHandler((req, reply) => {
+      const accept = req.headers.accept ?? "";
+      if (req.method === "GET" && accept.includes("text/html")) {
+        return reply.sendFile("index.html");
+      }
+      return reply.code(404).send({ error: "not found" });
+    });
+  }
 
   return app;
 }

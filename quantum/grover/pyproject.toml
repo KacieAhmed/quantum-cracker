@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantum-cracker-grover"
+version = "0.1.0"
+description = "Grover's algorithm over toy seed-phrase keyspaces - educational demo with an honest-scaling story, not an attack tool"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "qiskit==2.5.2",
+    "qiskit-aer==0.17.2",
+    "matplotlib==3.11.2",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.8",
+]
+
+[project.scripts]
+qcracker-grover = "qcracker_grover.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -36,6 +36,23 @@ fn js_err(e: cracker_core::CrackerError) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 
+/// Validate one address string with the engine's decode rules (reference doc
+/// section 8) for instant in-browser input feedback: malformed fails decode
+/// here; well-formed-but-wrong decodes fine (only a search can fail compare).
+/// Returns `{valid: true, kind, normalized}` or `{valid: false, error}`.
+#[wasm_bindgen]
+pub fn validate_address(address: &str) -> String {
+    match cracker_core::validate::parse_target(address) {
+        Ok(parsed) => serde_json::json!({
+            "valid": true,
+            "kind": parsed.kind().label(),
+            "normalized": parsed.kind().format_address(&parsed.bytes()),
+        })
+        .to_string(),
+        Err(err) => serde_json::json!({ "valid": false, "error": err.to_string() }).to_string(),
+    }
+}
+
 #[wasm_bindgen]
 pub struct CrackerWorker {
     searcher: Searcher,

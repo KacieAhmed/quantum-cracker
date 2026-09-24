@@ -10,3 +10,5 @@ dist/
 result.json
 sweep.json
 /target
+node_modules/
+.vite/

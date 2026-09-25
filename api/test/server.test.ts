@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import type { WebSocket as WebSocketType } from "ws";
 import { buildApp, type BuildAppOptions } from "../src/server.js";
-import { PER_CORE_DERIVATIONS_PER_SEC } from "../src/config.js";
 import type { FastifyInstance } from "fastify";
 import type { ServerMessage } from "../src/types.js";
 
@@ -16,6 +15,9 @@ const fakeCli = fileURLToPath(
 
 const POOLED_ETH = "0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5";
 const POOLED_BTC = "16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp";
+// Fixture-valid 12-word phrase used by the bounded limited-keyspace tests.
+const OWN_PHRASE =
+  "abandon ability able about above absent absorb abstract absurd abuse access accident";
 
 async function makeApp(
   overrides?: Partial<BuildAppOptions>,
@@ -160,7 +162,10 @@ describe("api server", () => {
         payload: {
           chain: "ethereum",
           mode: "classic",
-          address: POOLED_ETH,
+          // Bounded limited-keyspace run: worker caps apply here. Address-only
+          // runs are lotteries (single lane, no workers knob), so they no
+          // longer exercise this validation.
+          customWallet: { mnemonic: OWN_PHRASE, varySlots: [1, 11] },
           workers: 8,
         },
       });
@@ -176,7 +181,7 @@ describe("api server", () => {
         payload: {
           chain: "ethereum",
           mode: "classic",
-          address: POOLED_ETH,
+          customWallet: { mnemonic: OWN_PHRASE, varySlots: [1, 11] },
           workers: 8,
           force: true,
         },
@@ -210,14 +215,16 @@ describe("api server", () => {
           chain: "ethereum",
           mode: "classic",
           address: POOLED_ETH,
-          workers: 4,
+          // Address-only runs are full-space lotteries now: consent to the
+          // disclosed odds, then a bounded draw budget instead of lanes.
+          probe: true,
+          drawBudget: 5000,
         },
       });
       expect(started.statusCode).toBe(201);
-      const { runId, totalCandidates, estimatedRatePerSec } = started.json();
-      expect(totalCandidates).toBe(1000);
-      // 4 workers on an 8-core test host: linear scaling, no cap yet.
-      expect(estimatedRatePerSec).toBe(4 * PER_CORE_DERIVATIONS_PER_SEC);
+      const { runId, totalCandidates, searchKind } = started.json();
+      expect(searchKind).toBe("lottery");
+      expect(totalCandidates).toBe(5000);
 
       const matchMsg = await nextMatching((m) => m.type === "match");
       if (matchMsg.type !== "match") throw new Error("unreachable");
@@ -228,12 +235,12 @@ describe("api server", () => {
       expect(doneMsg.report.status).toBe("matched");
       expect(doneMsg.report.runId).toBe(runId);
 
-      // Lanes streamed live progress before settling.
+      // The lottery lane streamed live progress before settling.
       const snapshots = messages.filter((m) => m.type === "snapshot");
       expect(snapshots.length).toBeGreaterThan(0);
       const firstSnapshot = snapshots[0];
       if (firstSnapshot.type !== "snapshot") throw new Error("unreachable");
-      expect(Object.keys(firstSnapshot.report.lanes)).toHaveLength(4);
+      expect(Object.keys(firstSnapshot.report.lanes)).toHaveLength(1);
 
       const report = await app.inject({
         method: "GET",
@@ -303,7 +310,7 @@ describe("api server", () => {
           chain: "ethereum",
           mode: "classic",
           address: POOLED_ETH,
-          workers: 1,
+          probe: true,
         },
       });
       expect(first.statusCode).toBe(201);
@@ -314,7 +321,7 @@ describe("api server", () => {
           chain: "ethereum",
           mode: "classic",
           address: POOLED_ETH,
-          workers: 1,
+          probe: true,
         },
       });
       expect(second.statusCode).toBe(409);
@@ -443,9 +450,11 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
       expect(membershipNote).not.toContain("OUTSIDE the bounded pooled demo keyspace");
 
       const report = await waitForFinal(app, runId);
-      // The run chased the DERIVED address, not POOLED_ETH, and exhausted.
+      // The run chased the DERIVED address, not POOLED_ETH, and hit its
+      // draw budget (a lottery never claims exhaustion — the space is not
+      // finishable).
       expect(report.address).toBe(customWallet.derivedAddresses.eth);
-      expect(report.status).toBe("exhausted");
+      expect(report.status).toBe("budget-reached");
       expect(report.match).toBeNull();
       expect(report.customWallet.inPooledSpace).toBe(false);
     } finally {
@@ -764,7 +773,10 @@ describe("any-address feasibility probe", () => {
         },
       });
       expect(started.statusCode).toBe(422);
-      expect(started.json().error).toContain("feasibility probe");
+      // No membership gate exists anymore — the refusal is a consent gate:
+      // the same full-space lottery every address-only run gets.
+      expect(started.json().error).toContain("full-space lottery");
+      expect(started.json().error).toContain("probe");
     } finally {
       await app.close();
     }
@@ -807,7 +819,7 @@ describe("any-address feasibility probe", () => {
         },
       });
       expect(started.statusCode).toBe(422);
-      expect(started.json().error).toContain("classical bounded search");
+      expect(started.json().error).toContain("classical full-space search");
     } finally {
       await app.close();
     }

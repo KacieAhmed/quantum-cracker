@@ -163,17 +163,21 @@ if (args.includes("--validate-only")) {
   process.exit(allValid ? 0 : 2);
 }
 
-// Search mode.
+// Search mode (bounded pool sweeps AND full-space lotteries).
 const targets = args.flatMap((a, i) => (a === "--target" ? [args[i + 1]] : []));
 const addressType = flag("address-type", "eth");
 const start = Number(flag("start", "0"));
 const count = Number(flag("count", "0")) || SPACE;
 const progressMs = Number(flag("progress-ms", "100"));
 const target = targets[0];
+const randomDraws = flag("random-draws", null);
+const isLottery = randomDraws !== null;
+const drawBudget = isLottery ? Number(randomDraws) : 0;
 
-// Probe permission gate: mirrors the real engine. A target outside the
-// embedded demo corpus requires --probe over the bundled pool; the same flag
-// stamps every emitted event with "probe": true.
+// Probe permission gate: mirrors the real engine — one boundary for BOTH
+// traversal styles. A target outside the embedded demo corpus requires
+// --probe (address-only lottery) or --derived-target (own-wallet); the
+// flags stamp every emitted event.
 const probe = args.includes("--probe");
 const poolJsonPathGate = flag("pool-json", null);
 const derivedTarget = args.includes("--derived-target");
@@ -195,11 +199,30 @@ if (poolJsonPathGate === null && !probe && !derivedTarget) {
   const normalized = (target ?? "").toLowerCase();
   if (!corpus.includes(normalized)) {
     console.error(
-      `error: target ${target} is outside the embedded demo corpus — rerun with --probe to disclose a bounded feasibility probe`,
+      `error: target ${target} is outside the embedded demo corpus — rerun with --probe (address-only lottery) or --derived-target (own-wallet)`,
     );
     process.exit(2);
   }
 }
+
+// --watchlist: one address per line, comments/blanks skipped (the real
+// loader's rules). FAKE_DISCOVERY=1 arms a deterministic discovery: a draw
+// genuinely deriving the FIRST watchlist address ends the run labeled as a
+// discovery — never as a requested-target match.
+const watchlistPath = flag("watchlist", null);
+const DISCOVERY_ETH = "0x00000000000000000000000000000000d15c0dea";
+const DISCOVERY_MNEMONIC =
+  "ocean abstract raven accident hill absent winter abstract candy abuse mango absurd";
+let watchlist = [];
+if (watchlistPath !== null) {
+  watchlist = readFileSync(watchlistPath, "utf8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"));
+}
+const discoveryArmed =
+  process.env.FAKE_DISCOVERY === "1" &&
+  watchlist.map((a) => a.toLowerCase()).includes(DISCOVERY_ETH);
 
 // Limited-keyspace template: the space is the pool's prefix count, not the
 // bundled corpus space. Same math as the real engine's PoolSearch.
@@ -215,49 +238,197 @@ if (poolJsonPath !== null) {
   rawCandidates = space * pool.pool_words.length;
 }
 
-const end = Math.min(start + count, space);
-console.log(JSON.stringify({ event: "start", total_prefixes: space, raw_candidates: rawCandidates, start, end, workers: Number(flag("workers", "1")), address_type: addressType, targets, probe, derived_target: derivedTarget }));
-
-const step = Math.max(1, Math.ceil((end - start) / TICKS));
-let done = start;
-const tick = setInterval(() => {
-  done = Math.min(done + step, end);
-  const derived = done - start;
-  const willMatch = MATCH && start <= MATCH_ORDINAL && MATCH_ORDINAL < end && done > MATCH_ORDINAL;
-  const frontier = willMatch ? MATCH_ORDINAL : Math.min(done, end - 1);
-  console.log(JSON.stringify({
-    event: "progress",
-    prefixes_done: derived,
-    derived,
-    derived_per_sec: 500,
-    fraction_of_space: derived / space,
-    matches: willMatch ? 1 : 0,
-    frontier_prefix: frontier,
-    frontier_phrase: `phrase for ordinal ${frontier}`,
-    probe,
-    derived_target: derivedTarget,
-  }));
-  if (willMatch) {
-    const canonicalPath =
-      addressType === "eth" ? "m/44'/60'/0'/0/0" : "m/84'/0'/0'/0/0";
-    console.log(JSON.stringify({
+function emitMatch(mnemonic, matchedAddress, discovery) {
+  const canonicalPath =
+    addressType === "eth" ? "m/44'/60'/0'/0/0" : "m/84'/0'/0'/0/0";
+  console.log(
+    JSON.stringify({
       event: "match",
       derivation_path: canonicalPath,
-      match: { mnemonic: MATCH_MNEMONIC, path: canonicalPath, address: target, all_addresses: MATCH_ADDRESSES },
+      discovery,
+      match: {
+        mnemonic,
+        path: canonicalPath,
+        address: matchedAddress,
+        all_addresses: MATCH_ADDRESSES,
+      },
       probe,
       derived_target: derivedTarget,
-    }));
-    clearInterval(tick);
-    process.exit(0);
-  }
-  if (done >= end) {
-    console.log(JSON.stringify({ event: "done", prefixes_done: derived, derived, elapsed_ms: 5, derived_per_sec: 500, matches: 0, recovered: null, probe, derived_target: derivedTarget }));
-    clearInterval(tick);
-    process.exit(1); // exhausted without a match
-  }
-}, progressMs);
+    }),
+  );
+}
 
-process.on("SIGTERM", () => {
-  clearInterval(tick);
-  process.exit(143);
-});
+if (isLottery) {
+  // Full-space lottery: no coverage claim anywhere — the run's bounded
+  // resource is the draw budget, and progress reports consumed draws.
+  console.log(
+    JSON.stringify({
+      event: "start",
+      mode: "lottery",
+      draw_budget: drawBudget,
+      seed: flag("seed", ""),
+      workers: Number(flag("workers", "1")),
+      address_type: addressType,
+      targets,
+      probe,
+      derived_target: derivedTarget,
+    }),
+  );
+
+  // Pinned first candidate, labeled "pinned — not random". It matches only
+  // when it genuinely derives the REQUESTED target in the fixture-verse —
+  // and pins are exempt from discovery stops, mirroring the engine.
+  const pinned = flag("pinned-first", "");
+  if (pinned !== "") {
+    const pinMatches =
+      deriveForTest(pinned + "|").eth.toLowerCase() ===
+      (target ?? "").toLowerCase();
+    console.log(
+      JSON.stringify({
+        event: "pinned",
+        phrase: pinned,
+        label: "pinned — not random",
+        tested: true,
+        matched: pinMatches,
+      }),
+    );
+    if (pinMatches) {
+      emitMatch(pinned, target, false);
+      process.exit(0);
+    }
+  }
+
+  const totalTicks = Math.max(2, TICKS);
+  const step = Math.max(1, Math.ceil(drawBudget / totalTicks));
+  let drawsDone = 0;
+  let tick = 0;
+  const timer = setInterval(() => {
+    tick += 1;
+    drawsDone = Math.min(drawsDone + step, drawBudget);
+    // Discovery: ends the run as a labeled watchlist hit (requested-target
+    // precedence is preserved — FAKE_MATCH still fires first below).
+    if (discoveryArmed && tick === totalTicks - 1) {
+      emitMatch(DISCOVERY_MNEMONIC, DISCOVERY_ETH, true);
+      clearInterval(timer);
+      process.exit(0);
+    }
+    if (MATCH && tick >= totalTicks - 1) {
+      // A draw genuinely derived the requested target — claimed regardless
+      // of provenance, never suppressed by the label.
+      emitMatch(MATCH_MNEMONIC, target, false);
+      clearInterval(timer);
+      process.exit(0);
+    }
+    console.log(
+      JSON.stringify({
+        event: "progress",
+        mode: "lottery",
+        draw_budget: drawBudget,
+        draws_done: drawsDone,
+        checksum_valid: Math.floor(drawsDone / 16),
+        derived: Math.floor(drawsDone / 16),
+        derived_per_sec: 1400,
+        fraction_of_space: 0,
+        matches: 0,
+        frontier_prefix: null,
+        frontier_phrase: `random draw ${drawsDone}`,
+        probe,
+        derived_target: derivedTarget,
+      }),
+    );
+    if (drawsDone >= drawBudget) {
+      console.log(
+        JSON.stringify({
+          event: "done",
+          mode: "lottery",
+          draw_budget: drawBudget,
+          draws_done: drawsDone,
+          checksum_valid: Math.floor(drawsDone / 16),
+          elapsed_ms: 5,
+          derived_per_sec: 1400,
+          matches: 0,
+          recovered: null,
+          probe,
+          derived_target: derivedTarget,
+        }),
+      );
+      clearInterval(timer);
+      process.exit(1); // budget spent without a match (not an error)
+    }
+  }, progressMs);
+  process.on("SIGTERM", () => {
+    clearInterval(timer);
+    process.exit(143);
+  });
+}
+
+// Bounded sweep (limited-keyspace templates): unchanged semantics.
+if (!isLottery) {
+  const end = Math.min(start + count, space);
+  console.log(
+    JSON.stringify({
+      event: "start",
+      total_prefixes: space,
+      raw_candidates: rawCandidates,
+      start,
+      end,
+      workers: Number(flag("workers", "1")),
+      address_type: addressType,
+      targets,
+      probe,
+      derived_target: derivedTarget,
+    }),
+  );
+
+  const step = Math.max(1, Math.ceil((end - start) / TICKS));
+  let done = start;
+  const tick = setInterval(() => {
+    done = Math.min(done + step, end);
+    const derived = done - start;
+    const willMatch =
+      MATCH && start <= MATCH_ORDINAL && MATCH_ORDINAL < end && done > MATCH_ORDINAL;
+    const frontier = willMatch ? MATCH_ORDINAL : Math.min(done, end - 1);
+    console.log(
+      JSON.stringify({
+        event: "progress",
+        prefixes_done: derived,
+        derived,
+        derived_per_sec: 500,
+        fraction_of_space: derived / space,
+        matches: willMatch ? 1 : 0,
+        frontier_prefix: frontier,
+        frontier_phrase: `phrase for ordinal ${frontier}`,
+        probe,
+        derived_target: derivedTarget,
+      }),
+    );
+    if (willMatch) {
+      emitMatch(MATCH_MNEMONIC, target, false);
+      clearInterval(tick);
+      process.exit(0);
+    }
+    if (done >= end) {
+      console.log(
+        JSON.stringify({
+          event: "done",
+          prefixes_done: derived,
+          derived,
+          elapsed_ms: 5,
+          derived_per_sec: 500,
+          matches: 0,
+          recovered: null,
+          probe,
+          derived_target: derivedTarget,
+        }),
+      );
+      clearInterval(tick);
+      process.exit(1); // exhausted without a match
+    }
+  }, progressMs);
+
+  process.on("SIGTERM", () => {
+    clearInterval(tick);
+    process.exit(143);
+  });
+}
+

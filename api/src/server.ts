@@ -5,6 +5,7 @@ import websocket from "@fastify/websocket";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { randomInt } from "node:crypto";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   PER_CORE_DERIVATIONS_PER_SEC,
   PROGRESS_MS,
@@ -56,6 +57,12 @@ export interface BuildAppOptions {
   /** Injectable for tests: deterministic host capabilities. */
   systemInfoFn?: () => ReturnType<typeof systemInfo>;
   /**
+   * Discovery watchlist: one address per line; a candidate deriving any of
+   * them ends the run as a labeled discovery. Default: the bundled asset.
+   * Set to null to run without one (disclosed in the response).
+   */
+  watchlistPath?: string | null;
+  /**
    * When set, the API also serves this directory's built console over the
    * same port (single-port hosting). API routes keep precedence over the
    * static wildcard; unmatched page requests fall back to index.html.
@@ -92,7 +99,7 @@ interface CustomWalletBody {
 interface CrackBody {
   chain: Chain;
   mode: Mode;
-  /** Corpus-mode target. Required unless customWallet supplies the mnemonic. */
+  /** Address-only lottery target: ANY valid address, no seed supplied. */
   address?: string;
   workers?: number;
   force?: boolean;
@@ -100,11 +107,14 @@ interface CrackBody {
   /** "Test with your own wallet": derive the target from this mnemonic. */
   customWallet?: CustomWalletBody;
   /**
-   * Any-address feasibility probe: target a well-formed address with NO seed
-   * supplied. The run stays bounded to the bundled pooled demo space and the
-   * disclosure states up front that the declared address will not be found.
+   * Address-only full-space lottery: the run is a disclosed draw-budget
+   * lottery over ALL checksum-valid phrases (2^128 ≈ 3.4×10^38). The flag is
+   * the user's consent to those odds — address-only requests are refused
+   * without it. Mutually exclusive with customWallet (separate permissions).
    */
   probe?: boolean;
+  /** Address-only lottery draw budget (safety cap on raw draws). */
+  drawBudget?: number;
 }
 
 /**
@@ -128,6 +138,11 @@ const crackBodySchema = {
     workers: { type: "integer", minimum: 1, maximum: 64 },
     force: { type: "boolean" },
     probe: { type: "boolean" },
+    drawBudget: {
+      type: "integer",
+      minimum: 1_000,
+      maximum: LOTTERY_DRAWS_MAX,
+    },
     quantumBits: { type: "integer", minimum: 2, maximum: QUANTUM_BITS_MAX },
     customWallet: {
       type: "object",
@@ -186,10 +201,17 @@ function poolMembershipNote(wallet: CustomWalletProvenance): string {
  * phrases only); the raw 2048^12 ≈ 5.4×10^39 assembly count is labeled as
  * raw. Never softened: the expected wait is the teaching point.
  */
-function lotteryNote(pinnedIsUserPhrase: boolean): string {
+function lotteryNote(
+  pinnedIsUserPhrase: boolean,
+  watchlistSize: number | null,
+): string {
   const pin = pinnedIsUserPhrase
     ? "Your own phrase is pinned as the first candidate (labeled “pinned — not random”) for a reproducible benchmark; if it genuinely derives your address the run reports a real match at candidate #1 and ends — that is correct behavior, not a bug."
     : `The calibration phrase (“${CALIBRATION_PHRASE}”) is pinned as the first candidate (labeled “pinned — not random”) for a reproducible benchmark; it is not the target — the run continues into random sampling unless a candidate genuinely derives the address.`;
+  const watchlist =
+    watchlistSize === null
+      ? ""
+      : ` Discovery watchlist: ${watchlistSize.toLocaleString("en-US")} real-world addresses are armed — if any tested phrase genuinely derives one, the run stops immediately and reports it as a labeled discovery (a chance hit on someone's actual wallet, never presented as recovery of the address you asked about; per-draw odds ${watchlistSize.toLocaleString("en-US")} in 3.4×10^38).`;
   return (
     "Full-space lottery: every draw picks all 12 words uniformly at random and " +
     "keeps only checksum-valid phrases — 2^128 ≈ 3.4×10^38 valid phrases " +
@@ -199,6 +221,7 @@ function lotteryNote(pinnedIsUserPhrase: boolean): string {
     "universe. That is the honest demonstration of why real wallets are safe, " +
     "and a genuine-but-astronomically-unlikely lottery. " +
     pin +
+    watchlist +
     " The run stops at its draw budget or when you stop it — it never claims exhaustive coverage."
   );
 }
@@ -290,18 +313,25 @@ function limitedKeyspaceNote(
 }
 
 /**
- * Up-front disclosure for an any-address feasibility probe: the honest math
- * stated before the run starts, per the standing framing — this address will
- * not be found; the bounded demo space is searched, not the declared space.
+ * Up-front disclosure for an address-only full-space lottery: the honest math
+ * stated before the run starts. No seed phrase is involved; the declared
+ * address may be any valid address; a match is claimed exactly when a tested
+ * phrase derives it — derivation equality, nothing else.
  */
-function probeDisclosure(doc: CorpusDoc): string {
+function addressOnlyDisclosure(
+  drawBudget: number,
+  watchlistSize: number | null,
+): string {
   return (
-    "Feasibility probe — this address will not be found. This run searches the bounded pooled demo space " +
-    `(${doc.space.total_prefixes.toLocaleString("en-US")} checksum-valid prefixes, ` +
-    `${doc.space.raw_candidates.toLocaleString("en-US")} raw assemblies), ` +
-    "NOT the real space behind the declared address (~2^128 seed phrases — infeasible by an enormous margin, " +
-    "and Grover's quadratic speedup would still need ~2^64 oracle calls). " +
-    "Exhaustion is the honest expected end state, not a failure. " +
+    "Feasibility lottery — every draw picks all 12 words at random over ALL checksum-valid " +
+    "12-word BIP-39 phrases (2^128 ≈ 3.4×10^38 valid; 2048^12 ≈ 5.4×10^39 raw assemblies before " +
+    "checksum filtering). At ~1,400 draws/s the odds of deriving this specific address are about " +
+    "1 in 6.7×10^31 per hour — the expected wait is ~10^28 years, so this address will not be found; " +
+    `the run is a bounded budget of ${drawBudget.toLocaleString("en-US")} draws ` +
+    "and ends at the budget or when you stop it, never claiming exhaustive coverage. " +
+    (watchlistSize === null
+      ? "No discovery watchlist is loaded. "
+      : `A discovery watchlist of ${watchlistSize.toLocaleString("en-US")} real-world addresses is armed: if any tested phrase genuinely derives one of them, the run stops and reports a labeled discovery — never presented as recovery of the address you asked about. `) +
     "A match is claimed only if a tested phrase genuinely derives the target address — derivation equality, nothing else."
   );
 }
@@ -368,6 +398,44 @@ export async function buildApp(
     if (corpus) return corpus;
     corpus = await listTargets(options.cliPath);
     return corpus;
+  }
+
+  /**
+   * Discovery watchlist (cached): the asset's absolute path — handed to lanes
+   * as --watchlist — and its address count for the disclosures. Missing or
+   * unreadable asset → path null (runs proceed without discovery stops) and
+   * the size null; the disclosures say so rather than pretending.
+   */
+  let watchlist: { path: string | null; size: number | null } | null = null;
+  async function ensureWatchlist(): Promise<{
+    path: string | null;
+    size: number | null;
+  }> {
+    if (watchlist !== null) return watchlist;
+    if (options.watchlistPath === null) {
+      watchlist = { path: null, size: null };
+      return watchlist;
+    }
+    const resolved =
+      options.watchlistPath ??
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../assets/discovery-watchlist.txt",
+      );
+    try {
+      const text = await readFile(resolved, "utf8");
+      const size = text
+        .split("\n")
+        .filter((line) => {
+          const t = line.trim();
+          return t.length > 0 && !t.startsWith("#");
+        }).length;
+      watchlist = { path: resolved, size };
+    } catch (err) {
+      console.error(`discovery watchlist unavailable (${resolved}):`, err);
+      watchlist = { path: null, size: null };
+    }
+    return watchlist;
   }
 
   app.get("/system", async () => {
@@ -501,7 +569,7 @@ export async function buildApp(
       if (body.probe === true && body.customWallet !== undefined) {
         return reply.code(422).send({
           error:
-            "the feasibility probe takes only an address — no seed phrase is involved; drop customWallet to probe an arbitrary address",
+            "address-only lottery runs take only an address — no seed phrase is involved; drop customWallet to run the disclosed lottery against an arbitrary address",
         });
       }
 
@@ -518,6 +586,8 @@ export async function buildApp(
       let limitedKeyspace: (LimitedKeyspace & { prefixes: number }) | null =
         null;
       let poolJsonPath: string | null = null;
+      let addressOnlyBudget: number | null = null;
+      let addressOnlySeed: string | null = null;
       let poolFileCleanup: (() => void) | null = null;
 
       if (body.customWallet !== undefined) {
@@ -682,34 +752,35 @@ export async function buildApp(
         targetAddress = verdict.normalized ?? address;
         targetKind = kind;
 
-        // Corpus targets run as-is; anything else needs the explicitly
-        // disclosed probe mode. The engine enforces the same rule (--probe),
-        // so a non-corpus search cannot run without the probe label.
-        if (body.probe === true) {
-          const doc = await ensureCorpus();
-          probe = {
-            targetSource: "any-address-probe",
-            searchedSpace: "bundled-pooled-demo-space",
-            searchedRawCandidates: doc.space.raw_candidates,
-            searchedChecksumValid: doc.space.total_prefixes,
-            declaredSpaceSearched: false,
-            disclosure: probeDisclosure(doc),
-          };
-        } else {
-          const doc = await ensureCorpus();
-          const normalized = targetAddress.toLowerCase();
-          const member = doc.wallets.some((w) =>
-            body.chain === "ethereum"
-              ? w.addresses.eth.toLowerCase() === normalized
-              : w.addresses.btc_p2pkh.toLowerCase() === normalized ||
-                w.addresses.btc_bech32.toLowerCase() === normalized,
-          );
-          if (!member) {
+        // Address-only runs are the full-space lottery — the SAME behavior
+        // as own-wallet mode, no bounded corpus sweep exists on this path.
+        // The probe flag is the user's consent to the disclosed odds; any
+        // valid address is a legitimate lottery target (rich-list quick
+        // picks included), corpus member or not — there is no membership
+        // gate left on this path. Quantum mode is exempt: the toy Grover
+        // simulation never searches the address space, so there are no odds
+        // to consent to (and probe+quantum is rejected below anyway).
+        if (body.mode === "classic") {
+          if (body.probe !== true) {
             return reply.code(422).send({
               error:
-                'this address is outside the bundled demo corpus — use the "Any address (feasibility probe)" mode, which discloses up front that the bounded demo search will not find it',
+                'address-only runs are a full-space lottery over every checksum-valid 12-word phrase (2^128 ≈ 3.4×10^38) — resend with "probe": true to accept the disclosed odds, or supply customWallet to derive the target from your own seed phrase',
             });
           }
+          addressOnlyBudget = Math.min(
+            body.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
+            LOTTERY_DRAWS_MAX,
+          );
+          addressOnlySeed = newSeed();
+          const wl = await ensureWatchlist();
+          probe = {
+            targetSource: "addressOnly",
+            searchedSpace: "all-checksum-valid-12-word-bip39-phrases",
+            searchedRawCandidates: null,
+            searchedChecksumValid: null,
+            declaredSpaceSearched: false,
+            disclosure: addressOnlyDisclosure(addressOnlyBudget, wl.size),
+          };
         }
       }
 
@@ -717,7 +788,7 @@ export async function buildApp(
         if (body.probe === true) {
           return reply.code(422).send({
             error:
-              "the feasibility probe is a classical bounded search of the pooled demo space — the toy Grover simulation is a separate demo",
+              "the address-only lottery is a classical full-space search — the toy Grover simulation is a separate demo (its tiny bounded space is a physics demo, not an address search)",
           });
         }
         const bits = Math.min(
@@ -742,17 +813,51 @@ export async function buildApp(
         });
       }
 
+      // Address-only lotteries: ANY valid address, consented odds, the
+      // calibration phrase pinned first, discovery watchlist armed. This is
+      // the only address-only path — no bounded corpus sweep exists here.
+      if (probe !== null) {
+        const wl = await ensureWatchlist();
+        const report = runManager.startLottery(
+          {
+            runId,
+            chain: body.chain,
+            address: targetAddress,
+            addressType: targetKind,
+            drawBudget: addressOnlyBudget ?? LOTTERY_DRAWS_DEFAULT,
+            progressMs: options.progressMs ?? PROGRESS_MS,
+            seed: addressOnlySeed,
+            pinnedFirst: CALIBRATION_PHRASE,
+            probe,
+            watchlistPath: wl.path,
+          },
+          broadcast,
+        );
+        return reply.code(201).send({
+          runId: report.runId,
+          mode: "classic",
+          searchKind: "lottery",
+          drawBudget: addressOnlyBudget ?? LOTTERY_DRAWS_DEFAULT,
+          seed: addressOnlySeed,
+          totalCandidates: report.totalCandidates,
+          note: lotteryNote(false, wl.size),
+          probe,
+          targetNote: probe.disclosure,
+        });
+      }
+
       // Own-wallet default (no marked slots): a full-space lottery — all 12
       // words drawn uniformly at random over checksum-valid phrases, honest
       // odds disclosed in the response, the user's phrase pinned as the
       // first candidate. The classic bounded path below is for marked-slot
-      // own-wallet sweeps and corpus searches.
+      // own-wallet sweeps.
       if (customWallet !== null && limitedKeyspace === null) {
         const drawBudget = Math.min(
           body.customWallet?.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
           LOTTERY_DRAWS_MAX,
         );
         const seed = newSeed();
+        const wl = await ensureWatchlist();
         const report = runManager.startLottery(
           {
             runId,
@@ -764,6 +869,10 @@ export async function buildApp(
             customWallet,
             seed,
             pinnedFirst: body.customWallet?.mnemonic ?? null,
+            // In-request derivation attests the target: the engine's
+            // derived-target permission applies, not the probe label.
+            derivedTarget: true,
+            watchlistPath: wl.path,
           },
           broadcast,
         );
@@ -774,7 +883,7 @@ export async function buildApp(
           drawBudget,
           seed,
           totalCandidates: report.totalCandidates,
-          note: lotteryNote(true),
+          note: lotteryNote(true, wl.size),
           poolMembershipNote: poolMembershipNote(customWallet),
           customWallet,
         });
@@ -795,24 +904,19 @@ export async function buildApp(
         });
       }
 
-      const doc = await ensureCorpus();
-      // Limited-keyspace runs derive their own space: lane ranges split the
-      // template's prefix ordinals; totals use its checksum-valid estimate.
-      const total =
-        limitedKeyspace === null
-          ? doc.space.total_prefixes
-          : limitedKeyspace.estimatedChecksumValid;
-      const rawCandidates =
-        limitedKeyspace === null
-          ? doc.space.raw_candidates
-          : limitedKeyspace.rawAssemblies;
-      const ranges = splitSpace(
-        limitedKeyspace === null
-          ? doc.space.total_prefixes
-          : limitedKeyspace.prefixes,
-        workers,
-      );
+      // Reaching this block means a limited-keyspace own-wallet sweep: both
+      // lottery paths above returned, so the bundled corpus fallback below
+      // is gone — bounded corpus search is retired as a user-reachable path.
+      if (limitedKeyspace === null || poolJsonPath === null) {
+        return reply.code(422).send({
+          error: "no searchable space resolved for this request",
+        });
+      }
+      const total = limitedKeyspace.estimatedChecksumValid;
+      const rawCandidates = limitedKeyspace.rawAssemblies;
+      const ranges = splitSpace(limitedKeyspace.prefixes, workers);
 
+      const wl = await ensureWatchlist();
       const report = runManager.startClassic(
         {
           runId,
@@ -824,16 +928,13 @@ export async function buildApp(
           rawCandidates,
           progressMs: options.progressMs ?? PROGRESS_MS,
           customWallet,
-          probe,
+          probe: null,
           poolJsonPath,
+          watchlistPath: wl.path,
           seed: newSeed(),
-          // Own-wallet bounded sweeps pin the user's phrase first; corpus
-          // runs pin the calibration phrase for Kacie's benchmark anchor.
-          // The run manager tests it exactly once (lane 0).
-          pinnedFirst:
-            customWallet !== null
-              ? (body.customWallet?.mnemonic ?? null)
-              : CALIBRATION_PHRASE,
+          // Bounded own-wallet sweeps pin the user's phrase first; the run
+          // manager tests it exactly once (lane 0).
+          pinnedFirst: body.customWallet?.mnemonic ?? null,
           ...(poolFileCleanup === null ? {} : { onSettled: poolFileCleanup }),
         },
         broadcast,
@@ -858,16 +959,13 @@ export async function buildApp(
         ...(customWallet !== null
           ? {
               customWallet,
-              targetNote:
-                limitedKeyspace === null
-                  ? poolMembershipNote(customWallet)
-                  : `${limitedKeyspaceNote(
-                      limitedKeyspace,
-                      etaSeconds(total, 0, estimatedRate),
-                    )} ${poolMembershipNote(customWallet)}`,
+              // limitedKeyspace is non-null in this branch (guarded above).
+              targetNote: `${limitedKeyspaceNote(
+                limitedKeyspace,
+                etaSeconds(total, 0, estimatedRate),
+              )} ${poolMembershipNote(customWallet)}`,
             }
           : {}),
-        ...(probe !== null ? { probe, targetNote: probe.disclosure } : {}),
       });
     },
   );

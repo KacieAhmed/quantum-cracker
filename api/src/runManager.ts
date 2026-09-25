@@ -40,6 +40,8 @@ export interface StartClassicParams {
   pinnedFirst?: string | null;
   /** Any-address feasibility probe: passes --probe to lanes, stamps the report. */
   probe?: ProbeProvenance | null;
+  /** Discovery watchlist file handed to every lane (--watchlist). */
+  watchlistPath?: string | null;
   /** Called once when the run settles; the pool file's owner cleans it up. */
   onSettled?: () => void;
 }
@@ -57,6 +59,19 @@ export interface StartLotteryParams {
   seed?: string | null;
   /** Pinned first candidate — the user's own phrase on own-wallet runs. */
   pinnedFirst?: string | null;
+  /**
+   * Probe permission + provenance for ADDRESS-ONLY lottery runs: the same
+   * full-space lottery as own-wallet mode, but the target is any valid
+   * address with no seed in the request, so the run carries the probe label.
+   */
+  probe?: ProbeProvenance | null;
+  /**
+   * Own-wallet lottery attestation: the target was derived from the mnemonic
+   * in this request, so the engine's derived-target permission applies.
+   */
+  derivedTarget?: boolean;
+  /** Discovery watchlist file passed to the lane (--watchlist). */
+  watchlistPath?: string | null;
 }
 
 export interface StartQuantumParams {
@@ -173,6 +188,7 @@ export class RunManager {
         poolJsonPath: params.poolJsonPath ?? null,
         seed: params.seed ?? null,
         pinnedFirst: id === 0 ? (params.pinnedFirst ?? null) : "",
+        watchlistPath: params.watchlistPath ?? null,
         // Custom-wallet runs attest in-request derivation: the target came
         // from the mnemonic in this request, so the engine's derived-target
         // permission (not the probe label) applies.
@@ -209,6 +225,7 @@ export class RunManager {
       rawCandidates: params.drawBudget,
       lanes: [emptyLane(0, { start: 0, count: 0 })],
       customWallet: params.customWallet ?? null,
+      probe: params.probe ?? null,
     });
     report.searchKind = "lottery";
     const run: ActiveRun = {
@@ -241,6 +258,13 @@ export class RunManager {
       randomDraws: params.drawBudget,
       seed: params.seed ?? null,
       pinnedFirst: params.pinnedFirst ?? null,
+      watchlistPath: params.watchlistPath ?? null,
+      // Address-only lotteries carry the probe label; own-wallet lotteries
+      // attest in-request derivation instead (mutually exclusive).
+      ...(params.derivedTarget === true ? { derivedTarget: true } : {}),
+      ...(params.probe === null || params.probe === undefined
+        ? {}
+        : { probe: true }),
     });
     run.procs.set(0, proc);
     void this.consumeLane(run, proc);
@@ -314,7 +338,12 @@ export class RunManager {
       }
       const { code, signal } = await proc.exited;
       if (signal !== null || code === null) {
-        lane.status = run.status === "cancelled" ? "killed" : "error";
+        // Killed lanes: the run manager stopped them (cancel, or cancel-on-
+        // match), which is not a lane error. Anything else is real.
+        lane.status =
+          run.status === "cancelled" || run.status === "matched"
+            ? "killed"
+            : "error";
       } else {
         lane.status = code === 0 ? "done" : code === 1 ? "done" : "error";
       }
@@ -334,8 +363,14 @@ export class RunManager {
   ): void {
     switch (event.event) {
       case "start": {
+        // Lottery lanes span their draw budget (the only bounded resource);
+        // bounded lanes span prefix ordinals. Reading draw_budget first keeps
+        // the span units aligned regardless of what else the event carries.
         lane.end =
-          lane.start + (event.end ?? event.total_prefixes ?? event.draw_budget ?? 0);
+          lane.start +
+          (event.mode === "lottery"
+            ? (event.draw_budget ?? 0)
+            : (event.end ?? event.total_prefixes ?? 0));
         break;
       }
       case "pinned": {
@@ -374,6 +409,7 @@ export class RunManager {
           address: m.address,
           allAddresses: m.all_addresses,
           derivationPath: event.derivation_path,
+          discovery: event.discovery ?? false,
         };
         if (run.status === "running") {
           run.status = "matched";
@@ -434,7 +470,15 @@ export class RunManager {
     run.broadcastTimer = null;
     if (run.status === "running") {
       const anyError = run.report.lanes.some((l) => l.status === "error");
-      run.status = anyError ? "error" : "exhausted";
+      // A lottery that spends its budget without a match did NOT exhaust a
+      // finishable space — the honest end state is budget-reached, never a
+      // coverage claim. Bounded spaces (pools) genuinely exhaust.
+      run.status =
+        anyError
+          ? "error"
+          : run.report.searchKind === "lottery"
+            ? "budget-reached"
+            : "exhausted";
     }
     run.report.status = run.status;
     run.report.match = run.match;

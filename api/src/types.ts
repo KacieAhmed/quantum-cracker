@@ -34,6 +34,12 @@ export interface MatchInfo {
   allAddresses: { eth: string; btc_p2pkh: string; btc_bech32: string };
   /** Canonical BIP-32 path the engine walked for this match, when known. */
   derivationPath?: string;
+  /**
+   * True when the candidate derives an address on the discovery watchlist
+   * rather than the requested target: a real-world wallet found by chance,
+   * labeled and surfaced differently from a requested-target recovery.
+   */
+  discovery: boolean;
 }
 
 /**
@@ -86,16 +92,28 @@ export interface LimitedKeyspace {
  * target (derivation equality, nothing else counts).
  */
 export interface ProbeProvenance {
-  targetSource: "any-address-probe";
-  /** The bounded space actually searched: the bundled pooled demo space. */
-  searchedSpace: "bundled-pooled-demo-space";
-  /** Raw assemblies of the space that was searched. */
-  searchedRawCandidates: number;
-  /** Checksum-valid candidates of the space that was searched. */
-  searchedChecksumValid: number;
-  /** The declared address's real space was NOT searched. */
+  /**
+   * Address-only lottery runs: no seed phrase is involved, the target may be
+   * ANY valid address, and the run is a disclosed draw-budget lottery over
+   * the checksum-valid phrase space.
+   */
+  targetSource: "addressOnly";
+  /**
+   * The space actually searched: ALL checksum-valid 12-word BIP-39 phrases
+   * (2^128 ≈ 3.4×10^38) — the same full-space lottery own-wallet mode runs.
+   */
+  searchedSpace: "all-checksum-valid-12-word-bip39-phrases";
+  /**
+   * Raw pre-checksum assemblies of the searched space (2048^12 ≈ 5.4×10^39).
+   * Exceeds exact integer range — the disclosure text carries the math;
+   * null when not applicable.
+   */
+  searchedRawCandidates: number | null;
+  /** Checksum-valid candidates of the searched space (2^128), or null. */
+  searchedChecksumValid: number | null;
+  /** The declared address's real space was NOT searched (nobody can be). */
   declaredSpaceSearched: false;
-  /** Up-front honest framing: this address will not be found; here's the math. */
+  /** Up-front honest framing: odds, budget, discovery watchlist. */
   disclosure: string;
 }
 
@@ -103,6 +121,7 @@ export type RunStatus =
   | "running"
   | "matched"
   | "exhausted"
+  | "budget-reached"
   | "cancelled"
   | "error"
   | "quantum_demo";

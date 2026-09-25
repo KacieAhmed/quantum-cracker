@@ -573,6 +573,150 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
   });
 });
 
+describe("limited-keyspace mode (vary slots over the full wordlist)", () => {
+  // Fake-CLI-valid 12-word phrase; slot 11 (the twelfth word) is "accident".
+  const PHRASE =
+    "abandon ability able about above absent absorb abstract absurd abuse access accident";
+
+  async function waitForFinal(
+    app: FastifyInstance,
+    runId: string,
+    timeoutMs = 15000,
+  ): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const res = await app.inject({ method: "GET", url: `/runs/${runId}` });
+      const report = res.json() as Record<string, unknown>;
+      if (report.status !== "running") return report;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("run did not finish in time");
+  }
+
+  it("starts a template run and discloses the space, containment, and ETA", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          workers: 2,
+          customWallet: { mnemonic: PHRASE, varySlots: [1, 11] },
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json();
+      // Vary slots [1, 11]: one prefix slot (position 2) + the folded twelfth
+      // → 2048^1 prefixes, 2048^2 raw assemblies, 2048×128 checksum-valid.
+      expect(body.totalCandidates).toBe(2_048 * 128);
+      expect(body.rawCandidates).toBe(2_048 * 2_048);
+      expect(body.customWallet.limitedKeyspace).toMatchObject({
+        variedPositions1Indexed: [2, 12],
+        poolWords: 2_048,
+        rawAssemblies: 2_048 * 2_048,
+        estimatedChecksumValid: 2_048 * 128,
+        containsPhraseByConstruction: true,
+      });
+      expect(body.targetNote).toContain("Limited-keyspace search");
+      expect(body.targetNote).toContain("by construction");
+      expect(body.estimatedRatePerSec).toBeGreaterThan(0);
+      expect(body.etaSeconds).toBeGreaterThan(0);
+
+      const report = await waitForFinal(app, body.runId);
+      expect(report.status).toBe("matched");
+      const reportKeyspace = (
+        report.customWallet as Record<string, unknown>
+      ).limitedKeyspace as Record<string, unknown>;
+      expect(reportKeyspace).toMatchObject({
+        variedPositions1Indexed: [2, 12],
+        containsPhraseByConstruction: true,
+      });
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("rejects more than four varying slots, repeats, out-of-range slots, and non-12-word phrases", async () => {
+    const { app } = await makeApp();
+    try {
+      const crack = async (varySlots: number[], mnemonic = PHRASE) =>
+        app.inject({
+          method: "POST",
+          url: "/crack",
+          payload: {
+            chain: "ethereum",
+            mode: "classic",
+            customWallet: { mnemonic, varySlots },
+          },
+        });
+
+      const tooMany = await crack([0, 1, 2, 3, 4]);
+      expect(tooMany.statusCode).toBe(422);
+      expect(tooMany.json().error).toContain("at most 4");
+
+      const repeated = await crack([3, 3]);
+      expect(repeated.statusCode).toBe(422);
+      expect(repeated.json().error).toContain("repeated");
+
+      const outOfRange = await crack([12]);
+      expect(outOfRange.statusCode).toBe(422);
+      expect(outOfRange.json().error).toContain("between 0 and 11");
+
+      const longPhrase = await crack([0], `${PHRASE} ${PHRASE}`);
+      // Engine-valid 24-word phrase; the template space itself is 12-slot.
+      expect(longPhrase.statusCode).toBe(422);
+      expect(longPhrase.json().error).toContain("12-word");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects vary slots in quantum mode — the toy sim has no phrase to contain", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "quantum",
+          quantumBits: 4,
+          customWallet: { mnemonic: PHRASE, varySlots: [1] },
+        },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("classical-only");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects a mistyped word that is not in the BIP-39 wordlist", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: {
+            mnemonic: PHRASE.replace("about", "been"),
+            varySlots: [1],
+          },
+        },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error).toContain("invalid seed phrase");
+      expect(res.json().error).toContain("not in the BIP-39 English wordlist");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("static serving (single-port hosting)", () => {
   it("serves the console, keeps API routes first, and SPA-falls-back", async () => {
     const staticDir = await mkdtemp(path.join(os.tmpdir(), "qcracker-static-"));

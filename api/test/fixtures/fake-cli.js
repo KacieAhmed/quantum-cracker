@@ -8,9 +8,15 @@
 //
 // --derive-mnemonic validity rules (canned mirror of the real engine):
 //   - word count must be 12 or 24 (real BIP-39: 12/15/18/21/24)
-//   - every word must be in FAKE_WORDS
+//   - every word must be in the real BIP-39 English wordlist
 //   - a 12-word phrase ending in "abandon" fails the (fake) checksum
 //   - in-space = phrase starts with "abandon ability able"
+//
+// --pool-json <path> makes the search space a limited-keyspace template:
+// prefixes = pool_words.length ^ (varied positions among the first eleven),
+// raw candidates = prefixes × pool_words.length — the real engine's math.
+import { readFileSync } from "node:fs";
+
 const args = process.argv.slice(2);
 
 function flag(name, fallback = null) {
@@ -18,10 +24,19 @@ function flag(name, fallback = null) {
   return i >= 0 ? args[i + 1] : fallback;
 }
 
-const FAKE_WORDS = new Set([
-  "abandon", "ability", "able", "about", "above", "absent",
-  "absorb", "abstract", "absurd", "abuse", "access", "accident",
-]);
+// The engine's own embedded BIP-39 English wordlist — membership and the
+// --list-wordlist output both come from it, so 'been'-style typos fail here
+// exactly like they fail on the real engine.
+const WORDLIST_PATH = new URL(
+  "../../../crates/cracker-core/test-vectors/english.txt",
+  import.meta.url,
+);
+const BIP39_WORDS = new Set(
+  readFileSync(WORDLIST_PATH, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0),
+);
 
 // Deterministic 40-hex fake from a string (FNV-1a, zero-padded).
 function fakeHex(seed, len) {
@@ -50,9 +65,9 @@ function deriveErrorForTest(mnemonic) {
   if (!(words.length === 12 || words.length === 24)) {
     return `invalid mnemonic word count (${words.length}) — expected 12, 15, 18, 21 or 24`;
   }
-  const unknown = words.findIndex((w) => !FAKE_WORDS.has(w));
+  const unknown = words.findIndex((w) => !BIP39_WORDS.has(w));
   if (unknown >= 0) {
-    return `invalid mnemonic: unknown word at position ${unknown + 1}`;
+    return `invalid mnemonic: word at position ${unknown + 1} is not in the BIP-39 English wordlist`;
   }
   if (words.length === 12 && words[11] === "abandon") {
     return "invalid mnemonic: checksum failed";
@@ -105,6 +120,11 @@ function kindOf(target) {
   return "btc-p2pkh";
 }
 
+if (args.includes("--list-wordlist")) {
+  console.log(JSON.stringify({ words: [...BIP39_WORDS] }));
+  process.exit(0);
+}
+
 if (args.includes("--list-targets")) {
   console.log(
     JSON.stringify({
@@ -151,8 +171,22 @@ const count = Number(flag("count", "0")) || SPACE;
 const progressMs = Number(flag("progress-ms", "100"));
 const target = targets[0];
 
-const end = Math.min(start + count, SPACE);
-console.log(JSON.stringify({ event: "start", total_prefixes: SPACE, raw_candidates: SPACE * 16, start, end, workers: Number(flag("workers", "1")), address_type: addressType, targets }));
+// Limited-keyspace template: the space is the pool's prefix count, not the
+// bundled corpus space. Same math as the real engine's PoolSearch.
+const poolJsonPath = flag("pool-json", null);
+let space = SPACE;
+let rawCandidates = SPACE * 16;
+if (poolJsonPath !== null) {
+  const pool = JSON.parse(readFileSync(poolJsonPath, "utf8"));
+  const variedFirst11 = pool.variable_positions_1_indexed.filter(
+    (p) => p <= 11,
+  ).length;
+  space = pool.pool_words.length ** variedFirst11;
+  rawCandidates = space * pool.pool_words.length;
+}
+
+const end = Math.min(start + count, space);
+console.log(JSON.stringify({ event: "start", total_prefixes: space, raw_candidates: rawCandidates, start, end, workers: Number(flag("workers", "1")), address_type: addressType, targets }));
 
 const step = Math.max(1, Math.ceil((end - start) / TICKS));
 let done = start;
@@ -166,7 +200,7 @@ const tick = setInterval(() => {
     prefixes_done: derived,
     derived,
     derived_per_sec: 500,
-    fraction_of_space: derived / SPACE,
+    fraction_of_space: derived / space,
     matches: willMatch ? 1 : 0,
     frontier_prefix: frontier,
     frontier_phrase: `phrase for ordinal ${frontier}`,

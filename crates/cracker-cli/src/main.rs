@@ -129,6 +129,13 @@ struct Args {
     #[arg(long)]
     exhaustive: bool,
 
+    /// Feasibility-probe permission: allows targets outside the embedded demo
+    /// corpus. Required for non-corpus targets over the bundled pool, and the
+    /// same flag stamps every emitted event with "probe": true — the probe
+    /// label is inseparable from the permission, on every report surface.
+    #[arg(long)]
+    probe: bool,
+
     /// Validate the targets against the engine rules (doc section 8) and exit
     /// without searching: one JSON verdict per target, exit 0 iff all valid.
     #[arg(long)]
@@ -278,8 +285,8 @@ fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
     }
 }
 
-fn match_event(m: &Match) -> serde_json::Value {
-    serde_json::json!({ "event": "match", "match": m, "derivation_path": m.path.bip32_path() })
+fn match_event(m: &Match, probe: bool) -> serde_json::Value {
+    serde_json::json!({ "event": "match", "match": m, "derivation_path": m.path.bip32_path(), "probe": probe })
 }
 
 /// One JSON object for `--derive-mnemonic`: every supported address of the
@@ -396,9 +403,52 @@ fn list_targets() -> cracker_core::Result<serde_json::Value> {
     }))
 }
 
+/// Lowercased normalized addresses of the embedded demo corpus (the cross-check
+/// wallets plus the pooled demo wallet), straight from the engine's
+/// wallets.json — the permission boundary for non-probe searches.
+fn embedded_corpus_addresses() -> cracker_core::Result<std::collections::HashSet<String>> {
+    let doc: serde_json::Value = serde_json::from_str(cracker_core::WALLETS_JSON)
+        .map_err(|e| CrackerError::Other(format!("embedded wallets.json: {e}")))?;
+    let mut set = std::collections::HashSet::new();
+    fn push_addresses(
+        v: &serde_json::Value,
+        ctx: &str,
+        set: &mut std::collections::HashSet<String>,
+    ) -> cracker_core::Result<()> {
+        for key in ["eth", "btc_p2pkh", "btc_bech32"] {
+            let addr = v[key]["address"].as_str().ok_or_else(|| {
+                CrackerError::Other(format!(
+                    "embedded wallets.json: {ctx} missing {key}.address"
+                ))
+            })?;
+            set.insert(addr.to_lowercase());
+        }
+        Ok(())
+    }
+    let wallets = doc["wallets"].as_array().ok_or_else(|| {
+        CrackerError::Other("embedded wallets.json: missing wallets array".to_string())
+    })?;
+    for w in wallets {
+        push_addresses(w, "wallet", &mut set)?;
+    }
+    push_addresses(&doc["pooled_demo_wallet"], "pooled_demo_wallet", &mut set)?;
+    Ok(set)
+}
+
 fn run_pool(args: &Args) -> cracker_core::Result<bool> {
+    let probe = args.probe;
     let shuffle_seed = run_seed(args);
     let pool = load_pool(args)?;
+    // Embedded-corpus targeting needs no permission; the moment a target falls
+    // outside it, --probe is required. Permission and disclosure live in the
+    // same flag, so a non-corpus search cannot emit a single unlabeled event.
+    // Custom pools (--pool-json, e.g. limited-keyspace runs) are explicitly
+    // configured spaces and skip the corpus gate.
+    let corpus: Option<std::collections::HashSet<String>> = if probe || args.pool_json.is_some() {
+        None
+    } else {
+        Some(embedded_corpus_addresses()?)
+    };
     let mut targets = Vec::new();
     for t in &args.targets {
         let parsed = parse_target(t)?;
@@ -407,6 +457,14 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
                 "target {t} is not a {} address",
                 args.address_type.label()
             )));
+        }
+        if let Some(corpus) = &corpus {
+            let normalized = parsed.kind().format_address(&parsed.bytes()).to_lowercase();
+            if !corpus.contains(&normalized) {
+                return Err(CrackerError::Other(format!(
+                    "target {t} is outside the embedded demo corpus — rerun with --probe to disclose a bounded feasibility probe (it scans the pooled demo space, not the declared address's real space)"
+                )));
+            }
         }
         targets.push(Target {
             kind: parsed.kind(),
@@ -458,6 +516,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
             "workers": args.workers,
             "address_type": args.address_type.label(),
             "targets": args.targets,
+            "probe": probe,
         });
         writeln!(out, "{start_event}")?;
         out.flush()?;
@@ -526,7 +585,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
                 {
                     let mut out = std::io::stdout().lock();
                     for m in &newly {
-                        if writeln!(out, "{}", match_event(m)).is_err() {
+                        if writeln!(out, "{}", match_event(m, probe)).is_err() {
                             ok = false;
                             break;
                         }
@@ -551,6 +610,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
                                 .config
                                 .pool
                                 .candidate_at(frontier),
+                            "probe": probe,
                         });
                         if writeln!(out, "{line}").is_err() || out.flush().is_err() {
                             ok = false;
@@ -582,12 +642,13 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
     {
         let mut out = std::io::stdout().lock();
         for m in &all_matches {
-            writeln!(out, "{}", match_event(m))?;
+            writeln!(out, "{}", match_event(m, probe))?;
         }
         let derived = searcher.progress.derived.load(Ordering::Relaxed);
         let done_event = serde_json::json!({
             "event": "done",
             "mode": "pool",
+            "probe": probe,
             "prefixes_done": searcher.progress.prefixes_done.load(Ordering::Relaxed),
             "derived": derived,
             "elapsed_ms": elapsed.as_millis() as u64,

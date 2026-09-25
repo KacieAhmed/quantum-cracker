@@ -23,6 +23,7 @@ fn corpus_searcher(target_address: &str) -> Searcher {
             }],
             traversal_seed: 0,
             pinned_first: None,
+            discovery: Vec::new(),
         },
         true,
     )

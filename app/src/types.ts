@@ -32,6 +32,25 @@ export interface LaneState {
   status: LaneStatus;
 }
 
+/**
+ * Provenance of an address-only run: the user typed ANY valid address with
+ * no seed involved, consented to the disclosed odds, and the run is a
+ * bounded full-space lottery over ALL checksum-valid 12-word BIP-39 phrases
+ * — never a search of the declared address's real space (nobody can do
+ * that). Mirrors api/src/types.ts.
+ */
+export interface ProbeProvenance {
+  targetSource: "addressOnly";
+  searchedSpace: "all-checksum-valid-12-word-bip39-phrases";
+  /** A lottery has no finishable space — always null (counts would lie). */
+  searchedRawCandidates: number | null;
+  searchedChecksumValid: number | null;
+  /** The declared address's real space was NOT searched. */
+  declaredSpaceSearched: false;
+  /** Up-front honest framing: odds, budget, discovery watchlist. */
+  disclosure: string;
+}
+
 export interface AllAddresses {
   eth: string;
   btc_p2pkh: string;
@@ -45,6 +64,12 @@ export interface MatchInfo {
   allAddresses: AllAddresses;
   /** Canonical BIP-32 path the engine walked for this match, when known. */
   derivationPath?: string;
+  /**
+   * True when the candidate derives an address on the discovery watchlist
+   * INSTEAD of the requested target — labeled a discovery, never presented
+   * as recovery of the address the run was pointed at.
+   */
+  discovery?: boolean;
 }
 
 /**
@@ -87,6 +112,7 @@ export type RunStatus =
   | "running"
   | "matched"
   | "exhausted"
+  | "budget-reached"
   | "cancelled"
   | "error"
   | "quantum_demo";
@@ -117,6 +143,8 @@ export interface RunReport {
   quantum: unknown | null;
   /** Set when the run's target was derived from a user-supplied seed phrase. */
   customWallet?: CustomWalletProvenance | null;
+  /** Set when the run is a consented address-only full-space lottery. */
+  probe?: ProbeProvenance | null;
   /**
    * How the run traverses its space: bounded = shuffled exhaustive coverage
    * (finishable, ETA disclosed), lottery = uniform random sampling of the
@@ -203,6 +231,14 @@ export interface CrackRequest {
      */
     varySlots?: number[];
   };
+  /**
+   * Address-only consent: yes to the disclosed full-space lottery odds
+   * (2^128 valid phrases; the typed address will not be found within a
+   * lifetime). Required for every address-only classic run.
+   */
+  probe?: boolean;
+  /** Draw budget for lottery runs (defaults to the server's disclosed cap). */
+  drawBudget?: number;
 }
 
 export interface ClassicStart {
@@ -229,7 +265,22 @@ export interface QuantumStart {
   targetNote?: string;
 }
 
-export type CrackStart = ClassicStart | QuantumStart;
+export interface LotteryStart {
+  runId: string;
+  mode: "classic";
+  searchKind: "lottery";
+  /** The disclosed number of random draws the run will spend. */
+  drawBudget: number;
+  seed: number;
+  totalCandidates: number;
+  note: string;
+  probe?: ProbeProvenance;
+  customWallet?: CustomWalletProvenance;
+  targetNote?: string;
+  poolMembershipNote?: string;
+}
+
+export type CrackStart = ClassicStart | QuantumStart | LotteryStart;
 
 // ── POST /derive ────────────────────────────────────────────────────────────
 

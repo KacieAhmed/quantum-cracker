@@ -2,6 +2,7 @@
 //! (reference doc section 9). Shared atomics expose progress; an atomic stop
 //! flag makes searches cooperative and resumable.
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,11 +30,15 @@ pub struct Match {
     pub path: PathKind,
     pub address: String,
     pub all_addresses: AddressSet,
+    /// True when this match hit the discovery watchlist rather than the
+    /// requested target: the phrase genuinely derives a real-world address,
+    /// but it is NOT the phrase for the address the user entered.
+    pub discovery: bool,
 }
 
 /// One comparison target, normalized to its 20 address bytes (doc section
 /// 9.2: compare canonical forms by exact equality).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Target {
     pub kind: PathKind,
     pub bytes: [u8; 20],
@@ -54,6 +59,13 @@ pub struct SearchConfig {
     /// with that match at candidate #1. Not part of the ordinal space, so it
     /// never counts against prefixes_done.
     pub pinned_first: Option<String>,
+    /// Discovery watchlist: candidates that genuinely derive one of these
+    /// addresses end the run as labeled discoveries (a real-world wallet,
+    /// not necessarily the user's requested target). Pins are exempt — the
+    /// calibration anchor tests requested targets only, so a watchlist that
+    /// contains the demo-corpus addresses cannot end an address-only run at
+    /// candidate #1.
+    pub discovery: Vec<Target>,
 }
 
 /// Shared atomic progress counters (lock-free; callers poll freely).
@@ -104,6 +116,7 @@ pub(crate) fn build_match(
         path: kind,
         address: kind.format_address(bytes),
         all_addresses: all,
+        discovery: false,
     }
 }
 
@@ -114,6 +127,8 @@ pub struct Searcher {
     pub config: Arc<SearchConfig>,
     /// Shuffled order for this pool space (lottery-style traversal).
     permutation: Permutation,
+    /// Hash-indexed discovery watchlist for O(1) per-candidate checks.
+    discovery_index: HashSet<Target>,
     pub progress: Arc<Progress>,
     pub stop: Arc<AtomicBool>,
     stop_on_match: bool,
@@ -127,9 +142,11 @@ impl Searcher {
         let mut kinds = config.targets.iter().map(|t| t.kind).collect::<Vec<_>>();
         kinds.sort();
         kinds.dedup();
+        let discovery_index = config.discovery.iter().copied().collect();
         Self {
             config: Arc::new(config),
             permutation,
+            discovery_index,
             progress: Arc::default(),
             stop: Arc::default(),
             stop_on_match,
@@ -170,7 +187,7 @@ impl Searcher {
         // would test something the user never supplied.
         bip39::validate(pinned).ok()?;
         let indices: [u16; 12] = bip39::indices_from_mnemonic(pinned).ok()?.try_into().ok()?;
-        self.test_candidate(&indices);
+        self.test_candidate(&indices, false);
         self.take_matches().into_iter().next()
     }
 
@@ -227,11 +244,16 @@ impl Searcher {
         let prefix = self.config.pool.assemble_prefix(ordinal);
         self.config.pool.candidates_for_prefix(&prefix, candidates);
         for indices in candidates.drain(..) {
-            self.test_candidate(&indices);
+            self.test_candidate(&indices, true);
         }
     }
 
-    fn test_candidate(&self, indices: &[u16; 12]) {
+    /// Test one checksum-valid candidate against the requested targets, and
+    /// (when `allow_discovery`) the discovery watchlist. The pin passes
+    /// `false`: the calibration anchor must never end a run as a discovery,
+    /// even when the watchlist contains the demo-corpus addresses it
+    /// derives.
+    fn test_candidate(&self, indices: &[u16; 12], allow_discovery: bool) {
         self.progress.derived.fetch_add(1, Ordering::Relaxed);
         let mnemonic = match bip39::mnemonic_from_indices(indices) {
             Ok(m) => m,
@@ -251,17 +273,40 @@ impl Searcher {
                 PathKind::BtcBech32 => derived.btc_bech32,
             };
             if bytes == Some(target.bytes) {
-                self.record_match(&mnemonic, target.kind, &target.bytes);
+                self.record_match(&mnemonic, target.kind, &target.bytes, false);
                 if self.stop_on_match {
                     self.stop.store(true, Ordering::Relaxed);
                 }
             }
         }
+        if !allow_discovery {
+            return;
+        }
+        for kind in &self.kinds {
+            let bytes = match kind {
+                PathKind::Eth => derived.eth,
+                PathKind::BtcP2pkh => derived.btc_p2pkh,
+                PathKind::BtcBech32 => derived.btc_bech32,
+            };
+            if let Some(b) = bytes {
+                let candidate = Target {
+                    kind: *kind,
+                    bytes: b,
+                };
+                if self.discovery_index.contains(&candidate) {
+                    self.record_match(&mnemonic, *kind, &b, true);
+                    if self.stop_on_match {
+                        self.stop.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
     }
 
-    fn record_match(&self, mnemonic: &str, kind: PathKind, bytes: &[u8; 20]) {
+    fn record_match(&self, mnemonic: &str, kind: PathKind, bytes: &[u8; 20], discovery: bool) {
         self.progress.matches.fetch_add(1, Ordering::Relaxed);
-        let m = build_match(mnemonic, self.config.pool.passphrase(), kind, bytes);
+        let mut m = build_match(mnemonic, self.config.pool.passphrase(), kind, bytes);
+        m.discovery = discovery;
         self.matches.lock().expect("matches mutex poisoned").push(m);
     }
 
@@ -297,6 +342,7 @@ mod tests {
                 }],
                 traversal_seed,
                 pinned_first: None,
+                discovery: Vec::new(),
             },
             true,
         )

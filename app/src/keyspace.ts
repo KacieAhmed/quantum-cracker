@@ -56,3 +56,32 @@ export function varySlotError(
   }
   return null;
 }
+
+/**
+ * Full-space lottery math (mirrors the engine's disclosure constants): raw
+ * 12-word assemblies are 2048^12 ≈ 5.4×10^39, but only 2^128 ≈ 3.4×10^38 of
+ * those are checksum-valid — and the engine samples valid phrases only, so
+ * every disclosed ODDS figure is over the valid space. The raw figure is
+ * always labeled as raw. Never softened: the expected wait is the point.
+ */
+export const FULL_SPACE_RAW_ASSEMBLIES = 2048 ** 12; // ≈ 5.44e39 (labeled raw)
+export const FULL_SPACE_VALID_PHRASES = 2 ** 128; // ≈ 3.40e38 checksum-valid
+/** Demo draws-per-second the odds copy assumes (one ~1,400/s worker). */
+export const LOTTERY_DRAWS_PER_SEC = 1_400;
+
+/** Chance of one specific valid phrase per hour at the demo draw rate. */
+export function lotteryOddsOneInPerHour(
+  rate = LOTTERY_DRAWS_PER_SEC,
+): number {
+  return FULL_SPACE_VALID_PHRASES / (rate * 3_600);
+}
+
+/** Expected wait for one specific phrase, in years, at the demo draw rate. */
+export function lotteryExpectedWaitYears(rate = LOTTERY_DRAWS_PER_SEC): number {
+  return lotteryOddsOneInPerHour(rate) / (365.25 * 24);
+}
+
+/** Per-marked-slot bounded sweep space (1 slot = 2,048 candidates). */
+export function markedSlotSpace(marked: number[]): TemplateSpace {
+  return templateSpace(marked);
+}

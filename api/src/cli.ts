@@ -4,12 +4,20 @@ import type { LaneRange } from "./types.js";
 
 /** Raw JSON events cracker-cli streams on stdout (one per line). */
 export interface CliEvent {
-  event: "start" | "progress" | "match" | "done";
+  event: "start" | "progress" | "match" | "done" | "pinned";
   total_prefixes?: number;
   raw_candidates?: number;
   start?: number;
   end?: number;
   workers?: number | null;
+  /** Pool mode vs full-space lottery mode (done/start events). */
+  mode?: string;
+  /** Lottery-only counters: consumed draw budget + checksum-valid draws. */
+  draw_budget?: number;
+  draws_done?: number;
+  checksum_valid?: number;
+  /** Shuffle/draw-stream seed the lane is running under. */
+  seed?: string;
   prefixes_done?: number;
   derived?: number;
   derived_per_sec?: number;
@@ -26,6 +34,11 @@ export interface CliEvent {
     all_addresses: { eth: string; btc_p2pkh: string; btc_bech32: string };
   };
   recovered?: string | null;
+  /** Pinned-event fields: the tested-first candidate and its label. */
+  phrase?: string;
+  label?: string;
+  tested?: boolean;
+  matched?: boolean;
 }
 
 /** Output of cracker-cli --derive-mnemonic (one JSON object). */
@@ -80,6 +93,19 @@ export interface LaneSpec extends LaneRange {
    * for template runs; null/undefined scans the bundled pooled corpus.
    */
   poolJsonPath?: string | null;
+  /**
+   * Lottery mode: sample this many raw phrases over the FULL 2^128
+   * checksum-valid space instead of scanning prefix ranges.
+   */
+  randomDraws?: number | null;
+  /** Shuffle/draw-stream seed — every lane of a run shares one. */
+  seed?: string | null;
+  /**
+   * Pinned first candidate, tested before any traversal/sampling. Passed to
+   * lane 0 only; other lanes get "" (pinning disabled) so the pin is tested
+   * exactly once per run.
+   */
+  pinnedFirst?: string | null;
 }
 
 export interface LaneProcess {
@@ -90,22 +116,43 @@ export interface LaneProcess {
   kill(signal?: NodeJS.Signals): void;
 }
 
-/** Spawn one cracker-cli lane scanning [start, start+count) single-threaded. */
+/** Spawn one cracker-cli lane: a bounded range scan or a lottery sampler. */
 export function spawnLane(cliPath: string, spec: LaneSpec): LaneProcess {
   const args = [
     "--target",
     spec.address,
     "--address-type",
     spec.addressType,
-    "--start",
-    String(spec.start),
-    "--count",
-    String(spec.count),
-    "--workers",
-    "1",
-    "--progress-ms",
-    String(spec.progressMs),
   ];
+  if (spec.randomDraws !== undefined && spec.randomDraws !== null) {
+    // Full-space lottery: the CLI parallelizes internally and ends at the
+    // draw budget or when stopped.
+    args.push(
+      "--random-draws",
+      String(spec.randomDraws),
+      "--workers",
+      "1",
+      "--progress-ms",
+      String(spec.progressMs),
+    );
+  } else {
+    args.push(
+      "--start",
+      String(spec.start),
+      "--count",
+      String(spec.count),
+      "--workers",
+      "1",
+      "--progress-ms",
+      String(spec.progressMs),
+    );
+  }
+  // Shared seed + explicit pin control on every lane: "" disables pinning
+  // (the API pins lane 0 only, so the calibration/own phrase is tested once).
+  if (spec.seed !== undefined && spec.seed !== null) {
+    args.push("--seed", spec.seed);
+  }
+  args.push("--pinned-first", spec.pinnedFirst ?? "");
   if (spec.poolJsonPath !== undefined && spec.poolJsonPath !== null) {
     args.push("--pool-json", spec.poolJsonPath);
   }

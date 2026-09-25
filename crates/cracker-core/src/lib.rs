@@ -30,13 +30,16 @@ pub mod engine;
 pub mod error;
 pub mod keys;
 pub mod pool;
+pub mod sampler;
 pub mod seed;
+pub mod traversal;
 pub mod validate;
 
 pub use derive::{derive_addresses, derive_leaf, DerivedAddresses, PathKind};
 pub use engine::{Match, Progress, SearchConfig, Searcher, Target};
 pub use error::{CrackerError, Result};
 pub use pool::{PoolConfigJson, PoolSearch};
+pub use sampler::{LotteryConfig, LotteryProgress, LotterySearcher};
 pub use validate::TargetAddr;
 
 /// Embedded machine-readable BIP-39 test vectors (24 published entries plus

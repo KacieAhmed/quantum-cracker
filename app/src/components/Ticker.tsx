@@ -2,6 +2,8 @@ interface TickerProps {
   phrases: string[];
   /** True when a match exists — none of the listed phrases is ever it. */
   matched: boolean;
+  /** The pinned first candidate, if this run pinned one. */
+  pinned?: { runId: string; phrase: string; label: string; tested: boolean } | null;
 }
 
 /**
@@ -10,7 +12,7 @@ interface TickerProps {
  * the panel says so standing, and each row carries its own badge. The only
  * valid seed is the match card, which breaks this panel's pattern on purpose.
  */
-export function Ticker({ phrases, matched }: TickerProps) {
+export function Ticker({ phrases, matched, pinned = null }: TickerProps) {
   return (
     <section className="card ticker-card" aria-label="Recently tested non-matching candidates">
       <div className="card-title-row">
@@ -24,12 +26,23 @@ export function Ticker({ phrases, matched }: TickerProps) {
         green "Match found" result, if the run produces one, is a real
         derivation of the target address.
       </p>
-      {phrases.length === 0 ? (
+      {phrases.length === 0 && pinned === null ? (
         <p className="note muted">waiting for lane output…</p>
       ) : (
         <ul className="ticker">
+          {pinned !== null && (
+            <li key="pinned-first" className="newest">
+              <span
+                className="phrase-badge pinned"
+                aria-label={pinned.tested ? "pinned, tested first, no match" : "pinned, skipped"}
+              >
+                {pinned.label}
+              </span>
+              <span className="phrase-text">{pinned.phrase}</span>
+            </li>
+          )}
           {phrases.map((phrase, i) => (
-            <li key={`${i}-${phrase}`} className={i === 0 ? "newest" : undefined}>
+            <li key={`${i}-${phrase}`} className={i === 0 && pinned === null ? "newest" : undefined}>
               <span className="phrase-badge" aria-label="tested, no match">
                 not the wallet's seed
               </span>

@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::bip39;
 use crate::derive::{self, PathKind};
 use crate::pool::PoolSearch;
+use crate::traversal::Permutation;
 
 /// All derived addresses of a matched candidate, rendered canonically.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -41,6 +42,18 @@ pub struct Target {
 pub struct SearchConfig {
     pub pool: PoolSearch,
     pub targets: Vec<Target>,
+    /// Seed for the randomized ("lottery-style") traversal: every bounded
+    /// sweep covers the space exactly once, in shuffled order. All lanes of
+    /// a run share one seed, so their claimed ranges map to disjoint ordinal
+    /// images and full coverage stays provably exact.
+    pub traversal_seed: u64,
+    /// Phrase always tested first, before any shuffled traversal — the
+    /// user's own phrase on own-wallet runs, else the calibration phrase
+    /// (a reproducible timing anchor). Tested via [`Searcher::test_pinned_first`]
+    /// exactly once per run; if it genuinely derives a target the run ends
+    /// with that match at candidate #1. Not part of the ordinal space, so it
+    /// never counts against prefixes_done.
+    pub pinned_first: Option<String>,
 }
 
 /// Shared atomic progress counters (lock-free; callers poll freely).
@@ -51,10 +64,47 @@ pub struct Progress {
     /// Candidates that passed the checksum and were fully derived + compared.
     pub derived: AtomicU64,
     pub matches: AtomicU64,
-    /// Highest prefix ordinal claimed so far (monotone under parallel chunks):
-    /// a real candidate from the live frontier, for sampled "what is being
-    /// tried right now" displays.
+    /// Highest tested prefix ordinal so far (a real candidate from the live
+    /// frontier under the shuffled order, for sampled displays).
     pub current_prefix: AtomicU64,
+}
+
+/// Build a full match record for a genuinely derived hit: re-derives every
+/// supported chain from the recovered phrase so callers can cross-confirm
+/// the other paths. Shared by the pooled engine and the full-space sampler —
+/// the one code path a match claim may rest on.
+pub(crate) fn build_match(
+    mnemonic: &str,
+    passphrase: &str,
+    kind: PathKind,
+    bytes: &[u8; 20],
+) -> Match {
+    let all = derive::derive_addresses(
+        mnemonic,
+        passphrase,
+        &[PathKind::Eth, PathKind::BtcP2pkh, PathKind::BtcBech32],
+    )
+    .map(|d| AddressSet {
+        eth: d
+            .eth
+            .map(|b| PathKind::Eth.format_address(&b))
+            .unwrap_or_default(),
+        btc_p2pkh: d
+            .btc_p2pkh
+            .map(|b| PathKind::BtcP2pkh.format_address(&b))
+            .unwrap_or_default(),
+        btc_bech32: d
+            .btc_bech32
+            .map(|b| PathKind::BtcBech32.format_address(&b))
+            .unwrap_or_default(),
+    })
+    .unwrap_or_default();
+    Match {
+        mnemonic: mnemonic.to_string(),
+        path: kind,
+        address: kind.format_address(bytes),
+        all_addresses: all,
+    }
 }
 
 /// One searcher over one compiled pool config. `stop` is shared, so any
@@ -62,6 +112,8 @@ pub struct Progress {
 /// with `stop_on_match` the first hit stops all workers.
 pub struct Searcher {
     pub config: Arc<SearchConfig>,
+    /// Shuffled order for this pool space (lottery-style traversal).
+    permutation: Permutation,
     pub progress: Arc<Progress>,
     pub stop: Arc<AtomicBool>,
     stop_on_match: bool,
@@ -71,11 +123,13 @@ pub struct Searcher {
 
 impl Searcher {
     pub fn new(config: SearchConfig, stop_on_match: bool) -> Self {
+        let permutation = Permutation::new(config.pool.total_prefixes(), config.traversal_seed);
         let mut kinds = config.targets.iter().map(|t| t.kind).collect::<Vec<_>>();
         kinds.sort();
         kinds.dedup();
         Self {
             config: Arc::new(config),
+            permutation,
             progress: Arc::default(),
             stop: Arc::default(),
             stop_on_match,
@@ -84,10 +138,40 @@ impl Searcher {
         }
     }
 
+    /// The shuffled ordinal this searcher tests when it claims `claimed`.
+    pub fn encode_ordinal(&self, claimed: u64) -> u64 {
+        self.permutation.encode(claimed)
+    }
+
+    /// Unique preimage of an ordinal under the shuffle — the inverse of
+    /// [`Self::encode_ordinal`]. Tests (and a UI "show me this candidate"
+    /// affordance) aim a range at a specific candidate this way.
+    pub fn decode_ordinal(&self, image: u64) -> u64 {
+        self.permutation.decode(image)
+    }
+
     /// Number of prefix ordinals in the space (each is <= pool.len()
     /// checksum tests, ~1 address derivation).
     pub fn total_prefixes(&self) -> u64 {
         self.config.pool.total_prefixes()
+    }
+
+    /// Test the pinned first candidate exactly once, before any traversal
+    /// work: the caller (CLI/API) invokes this once per run, before lanes
+    /// start. Genuine-match rules apply — a return value of `Some` means the
+    /// pinned phrase really derives a target, never that it was merely
+    /// declared first. An unpinned config, an invalid checksum, or a
+    /// non-12-word pin yields `None` without touching counters beyond the
+    /// ordinary derivation tallies.
+    pub fn test_pinned_first(&self) -> Option<Match> {
+        let pinned = self.config.pinned_first.as_ref()?;
+        // A phrase that fails the checksum must NOT be tested as a remapped
+        // phrase (mnemonic_from_indices recomputes the final word) — that
+        // would test something the user never supplied.
+        bip39::validate(pinned).ok()?;
+        let indices: [u16; 12] = bip39::indices_from_mnemonic(pinned).ok()?.try_into().ok()?;
+        self.test_candidate(&indices);
+        self.take_matches().into_iter().next()
     }
 
     /// Scan prefix ordinals `range`; returns matches found by this call.
@@ -122,10 +206,15 @@ impl Searcher {
 
     fn run_sequential(&self, start: u64, end: u64) {
         let mut candidates = Vec::new();
-        for ordinal in start..end {
+        for claimed in start..end {
             if self.stop.load(Ordering::Relaxed) {
                 return;
             }
+            // Lottery-style traversal: test the shuffled image of the claimed
+            // ordinal. Ranges partition the claimed domain, the permutation
+            // is a bijection, so the fleet still draws every ordinal exactly
+            // once — coverage is unchanged, the order is the lottery's.
+            let ordinal = self.permutation.encode(claimed);
             self.test_ordinal(ordinal, &mut candidates);
         }
     }
@@ -172,35 +261,8 @@ impl Searcher {
 
     fn record_match(&self, mnemonic: &str, kind: PathKind, bytes: &[u8; 20]) {
         self.progress.matches.fetch_add(1, Ordering::Relaxed);
-        let all = derive::derive_addresses(
-            mnemonic,
-            self.config.pool.passphrase(),
-            &[PathKind::Eth, PathKind::BtcP2pkh, PathKind::BtcBech32],
-        )
-        .map(|d| AddressSet {
-            eth: d
-                .eth
-                .map(|b| PathKind::Eth.format_address(&b))
-                .unwrap_or_default(),
-            btc_p2pkh: d
-                .btc_p2pkh
-                .map(|b| PathKind::BtcP2pkh.format_address(&b))
-                .unwrap_or_default(),
-            btc_bech32: d
-                .btc_bech32
-                .map(|b| PathKind::BtcBech32.format_address(&b))
-                .unwrap_or_default(),
-        })
-        .unwrap_or_default();
-        self.matches
-            .lock()
-            .expect("matches mutex poisoned")
-            .push(Match {
-                mnemonic: mnemonic.to_string(),
-                path: kind,
-                address: kind.format_address(bytes),
-                all_addresses: all,
-            });
+        let m = build_match(mnemonic, self.config.pool.passphrase(), kind, bytes);
+        self.matches.lock().expect("matches mutex poisoned").push(m);
     }
 
     pub fn take_matches(&self) -> Vec<Match> {
@@ -222,7 +284,7 @@ mod tests {
     use crate::pool::{PoolSearch, WalletsFileJson};
     use crate::validate::parse_target;
 
-    fn corpus_searcher(target_address: &str) -> Searcher {
+    fn corpus_searcher(target_address: &str, traversal_seed: u64) -> Searcher {
         let doc: WalletsFileJson = serde_json::from_str(crate::WALLETS_JSON).unwrap();
         let pool = PoolSearch::from_config(&doc.pooled.pool_config, "").unwrap();
         let target = parse_target(target_address).unwrap();
@@ -233,6 +295,8 @@ mod tests {
                     kind: target.kind(),
                     bytes: target.bytes(),
                 }],
+                traversal_seed,
+                pinned_first: None,
             },
             true,
         )
@@ -243,8 +307,11 @@ mod tests {
 
     #[test]
     fn engine_recovers_the_target_in_a_one_prefix_range() {
-        let searcher = corpus_searcher(TARGET_ETH);
-        let matches = searcher.run_range(TARGET_PREFIX_ORDINAL..TARGET_PREFIX_ORDINAL + 1);
+        let searcher = corpus_searcher(TARGET_ETH, 0);
+        // The traversal is shuffled, so a range aims at the decoded preimage
+        // of the target's ordinal — and still recovers the exact phrase.
+        let claimed = searcher.decode_ordinal(TARGET_PREFIX_ORDINAL);
+        let matches = searcher.run_range(claimed..claimed + 1);
         assert_eq!(matches.len(), 1);
         assert_eq!(
             matches[0].mnemonic,
@@ -264,7 +331,7 @@ mod tests {
 
     #[test]
     fn engine_finds_nothing_in_an_early_range() {
-        let searcher = corpus_searcher(TARGET_ETH);
+        let searcher = corpus_searcher(TARGET_ETH, 0);
         let matches = searcher.run_range(0..64);
         assert!(matches.is_empty());
         assert_eq!(searcher.progress.prefixes_done.load(Ordering::Relaxed), 64);
@@ -272,7 +339,7 @@ mod tests {
 
     #[test]
     fn stop_flag_halts_the_scan() {
-        let searcher = corpus_searcher(TARGET_ETH);
+        let searcher = corpus_searcher(TARGET_ETH, 0);
         searcher.request_stop();
         let matches = searcher.run_range(0..1024);
         assert!(matches.is_empty());
@@ -281,7 +348,22 @@ mod tests {
 
     #[test]
     fn ranges_outside_the_space_are_empty() {
-        let searcher = corpus_searcher(TARGET_ETH);
+        let searcher = corpus_searcher(TARGET_ETH, 0);
         assert!(searcher.run_range(9_999_999..10_000_000).is_empty());
+    }
+
+    #[test]
+    fn shuffled_traversal_depends_on_the_seed_and_inverts() {
+        let a = corpus_searcher(TARGET_ETH, 0x1111_1111);
+        let b = corpus_searcher(TARGET_ETH, 0x2222_2222);
+        // A different seed visits a different ordinal first: the order is a
+        // seeded permutation, not identity (the lottery-style ordering).
+        assert_ne!(a.encode_ordinal(0), b.encode_ordinal(0));
+        // And every image has exactly one preimage (coverage stays exact).
+        let image = a.encode_ordinal(123_456);
+        assert_eq!(a.decode_ordinal(image), 123_456);
+        // Deterministic: the same seed reproduces the same order.
+        let a2 = corpus_searcher(TARGET_ETH, 0x1111_1111);
+        assert_eq!(a.encode_ordinal(123_456), a2.encode_ordinal(123_456));
     }
 }

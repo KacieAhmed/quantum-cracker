@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { randomInt } from "node:crypto";
 import path from "node:path";
 import {
   PER_CORE_DERIVATIONS_PER_SEC,
@@ -76,9 +77,15 @@ interface CustomWalletBody {
    * Limited-keyspace mode: 0-based phrase positions to vary over the FULL
    * BIP-39 wordlist while every other position stays fixed. The target is
    * still derived from this same request's mnemonic; the disclosed keyspace
-   * contains the true phrase by construction. Classical mode only.
+   * contains the true phrase by construction. Classical mode only. When
+   * empty/absent, the run is a full-space lottery (the own-wallet default).
    */
   varySlots?: number[];
+  /**
+   * Lottery draw budget (safety cap on raw draws). Ignored for marked-slot
+   * runs; the run still ends early on a genuine match or a cancel.
+   */
+  drawBudget?: number;
 }
 
 interface CrackBody {
@@ -92,6 +99,17 @@ interface CrackBody {
   /** "Test with your own wallet": derive the target from this mnemonic. */
   customWallet?: CustomWalletBody;
 }
+
+/**
+ * The BIP-39 mnemonic every run tests FIRST (Kacie's calibration anchor),
+ * address-only runs included, so timing is reproducible across runs.
+ */
+const CALIBRATION_PHRASE =
+  "permit bean gaze lawsuit expect exclude poet mercy enrich measure ocean since";
+
+/** Lottery draw budget defaults and cap (raw draws, ~1,400/s at one worker). */
+const LOTTERY_DRAWS_DEFAULT = 5_000_000;
+const LOTTERY_DRAWS_MAX = 500_000_000;
 
 const crackBodySchema = {
   type: "object",
@@ -117,6 +135,11 @@ const crackBodySchema = {
           items: { type: "integer", minimum: 0, maximum: 23 },
           maxItems: 8,
         },
+        drawBudget: {
+          type: "integer",
+          minimum: 1_000,
+          maximum: LOTTERY_DRAWS_MAX,
+        },
       },
     },
   },
@@ -139,14 +162,44 @@ function derivedAddressForChain(
 }
 
 /**
- * Honest-scaling note for custom-wallet runs: the pooled 2^24 keyspace is a
- * bounded demo space, so a wallet outside it can only ever end exhausted.
- * Stated up front, not discovered at "exhausted".
+ * Neutral pool-membership note (informational only): the lottery and
+ * marked-slot searches never depend on it, so it must not read as a verdict
+ * on whether the run can succeed.
  */
-function boundedKeyspaceNote(wallet: CustomWalletProvenance): string {
+function poolMembershipNote(wallet: CustomWalletProvenance): string {
   return wallet.inPooledSpace
-    ? "This seed phrase lies inside the bounded pooled demo keyspace — the run can genuinely match it."
-    : "Your wallet's address lies OUTSIDE the bounded pooled demo keyspace — the run stays bounded and will end exhausted without a match. That is the honest demonstration of keyspace scale, not a failure of your wallet.";
+    ? "Pool membership (informational): this phrase also lies inside the bounded pooled demo keyspace, so the pooled corpus mode can reach it too."
+    : "Pool membership (informational): this phrase lies outside the bounded pooled demo keyspace — irrelevant for the lottery and marked-slot searches below, which do not depend on it.";
+}
+
+/**
+ * Up-front disclosure for a full-space lottery run. The odds are over the
+ * CHECKSUM-VALID space (2^128 ≈ 3.4×10^38 phrases — the engine samples valid
+ * phrases only); the raw 2048^12 ≈ 5.4×10^39 assembly count is labeled as
+ * raw. Never softened: the expected wait is the teaching point.
+ */
+function lotteryNote(pinnedIsUserPhrase: boolean): string {
+  const pin = pinnedIsUserPhrase
+    ? "Your own phrase is pinned as the first candidate (labeled “pinned — not random”) for a reproducible benchmark; if it genuinely derives your address the run reports a real match at candidate #1 and ends — that is correct behavior, not a bug."
+    : `The calibration phrase (“${CALIBRATION_PHRASE}”) is pinned as the first candidate (labeled “pinned — not random”) for a reproducible benchmark; it is not the target — the run continues into random sampling unless a candidate genuinely derives the address.`;
+  return (
+    "Full-space lottery: every draw picks all 12 words uniformly at random and " +
+    "keeps only checksum-valid phrases — 2^128 ≈ 3.4×10^38 valid phrases " +
+    "(2048^12 ≈ 5.4×10^39 raw assemblies before checksum filtering). " +
+    "At ~1,400 draws/s the odds of one specific phrase are about 1 in 6.7×10^31 " +
+    "per hour — the expected wait is ~10^28 years, many times the age of the " +
+    "universe. That is the honest demonstration of why real wallets are safe, " +
+    "and a genuine-but-astronomically-unlikely lottery. " +
+    pin +
+    " The run stops at its draw budget or when you stop it — it never claims exhaustive coverage."
+  );
+}
+
+/** One shared u64 shuffle/draw seed per run, as a decimal string for the CLI. */
+function newSeed(): string {
+  // randomInt's range cap is 2^48 − 1 (exclusive max), plenty of entropy for
+  // a demo shuffle seed.
+  return randomInt(0, 2 ** 48 - 1).toString();
 }
 
 /** Max simultaneously-varied phrase slots the limited-keyspace mode allows. */
@@ -610,8 +663,49 @@ export async function buildApp(
           totalCandidates: report.totalCandidates,
           note: QUANTUM_NOTE,
           ...(customWallet !== null
-            ? { customWallet, targetNote: boundedKeyspaceNote(customWallet) }
+            ? {
+                customWallet,
+                targetNote: poolMembershipNote(customWallet),
+              }
             : {}),
+        });
+      }
+
+      // Own-wallet default (no marked slots): a full-space lottery — all 12
+      // words drawn uniformly at random over checksum-valid phrases, honest
+      // odds disclosed in the response, the user's phrase pinned as the
+      // first candidate. The classic bounded path below is for marked-slot
+      // own-wallet sweeps and corpus searches.
+      if (customWallet !== null && limitedKeyspace === null) {
+        const drawBudget = Math.min(
+          body.customWallet?.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
+          LOTTERY_DRAWS_MAX,
+        );
+        const seed = newSeed();
+        const report = runManager.startLottery(
+          {
+            runId,
+            chain: body.chain,
+            address: targetAddress,
+            addressType: targetKind,
+            drawBudget,
+            progressMs: options.progressMs ?? PROGRESS_MS,
+            customWallet,
+            seed,
+            pinnedFirst: body.customWallet?.mnemonic ?? null,
+          },
+          broadcast,
+        );
+        return reply.code(201).send({
+          runId: report.runId,
+          mode: "classic",
+          searchKind: "lottery",
+          drawBudget,
+          seed,
+          totalCandidates: report.totalCandidates,
+          note: lotteryNote(true),
+          poolMembershipNote: poolMembershipNote(customWallet),
+          customWallet,
         });
       }
 
@@ -660,6 +754,14 @@ export async function buildApp(
           progressMs: options.progressMs ?? PROGRESS_MS,
           customWallet,
           poolJsonPath,
+          seed: newSeed(),
+          // Own-wallet bounded sweeps pin the user's phrase first; corpus
+          // runs pin the calibration phrase for Kacie's benchmark anchor.
+          // The run manager tests it exactly once (lane 0).
+          pinnedFirst:
+            customWallet !== null
+              ? (body.customWallet?.mnemonic ?? null)
+              : CALIBRATION_PHRASE,
           ...(poolFileCleanup === null ? {} : { onSettled: poolFileCleanup }),
         },
         broadcast,
@@ -686,11 +788,11 @@ export async function buildApp(
               customWallet,
               targetNote:
                 limitedKeyspace === null
-                  ? boundedKeyspaceNote(customWallet)
-                  : limitedKeyspaceNote(
+                  ? poolMembershipNote(customWallet)
+                  : `${limitedKeyspaceNote(
                       limitedKeyspace,
                       etaSeconds(total, 0, estimatedRate),
-                    ),
+                    )} ${poolMembershipNote(customWallet)}`,
             }
           : {}),
       });

@@ -94,6 +94,7 @@ export default function App() {
 
   const ui = useRunFeed();
   const report = ui.report;
+  const pinnedEntry = ui.pinnedEntry;
   const running = report?.status === "running";
 
   // Machine capabilities + bundled corpus, loaded once.
@@ -360,7 +361,11 @@ export default function App() {
             />
             {report.mode === "classic" && <LaneGrid lanes={report.lanes} />}
             {report.mode === "classic" && (
-              <Ticker phrases={tickerPhrases} matched={report.status === "matched"} />
+              <Ticker
+                phrases={tickerPhrases}
+                matched={report.status === "matched"}
+                pinned={pinnedEntry}
+              />
             )}
           </>
         )}

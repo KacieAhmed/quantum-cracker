@@ -12,6 +12,11 @@ export interface RunUiState {
   lastDone: { runId: string; status: RunStatus } | null;
   quantumPayload: unknown | null;
   socketError: string | null;
+  /**
+   * The pinned first candidate (tested before any random sampling), for the
+   * feed's labeled row. Cleared when a new run's first snapshot arrives.
+   */
+  pinnedEntry: { runId: string; phrase: string; label: string; tested: boolean } | null;
 }
 
 export type RunReportView = import("./types").RunReport;
@@ -22,12 +27,34 @@ export const emptyRunUiState: RunUiState = {
   lastDone: null,
   quantumPayload: null,
   socketError: null,
+  pinnedEntry: null,
 };
 
 export function foldMessage(state: RunUiState, msg: ServerMessage): RunUiState {
   switch (msg.type) {
     case "snapshot":
-      return { ...state, report: msg.report, socketError: null };
+      return {
+        ...state,
+        report: msg.report,
+        socketError: null,
+        // New run: the pinned entry belongs to the previous one.
+        pinnedEntry:
+          state.report !== null && state.report.runId !== msg.report.runId
+            ? null
+            : state.pinnedEntry,
+      };
+    case "pinned":
+      // Arrives before the first snapshot on purpose: the pin is tested
+      // FIRST — the randomization boundary the feed labels.
+      return {
+        ...state,
+        pinnedEntry: {
+          runId: msg.runId,
+          phrase: msg.phrase,
+          label: msg.label,
+          tested: msg.tested,
+        },
+      };
     case "match":
       return {
         ...state,

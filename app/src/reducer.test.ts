@@ -101,4 +101,36 @@ describe("foldMessage", () => {
     });
     expect(state.socketError).toBe("engine unavailable");
   });
+
+  it("pinned stores the tested-first candidate with its label", () => {
+    const state = foldMessage(emptyRunUiState, {
+      type: "pinned",
+      runId: "run_p1",
+      phrase: "permit bean gaze lawsuit expect exclude poet mercy enrich measure ocean since",
+      label: "pinned — not random",
+      tested: true,
+    });
+    expect(state.pinnedEntry).toMatchObject({ runId: "run_p1", tested: true });
+    expect(state.pinnedEntry?.label).toBe("pinned — not random");
+  });
+
+  it("a new run's first snapshot clears a stale pinned entry", () => {
+    const pinned = foldMessage(emptyRunUiState, {
+      type: "pinned",
+      runId: "run_p1",
+      phrase: "alpha beta",
+      label: "pinned — not random",
+      tested: true,
+    });
+    const withReport = foldMessage(pinned, {
+      type: "snapshot",
+      report: { runId: "run_p1" } as RunReport,
+    });
+    expect(withReport.pinnedEntry).not.toBeNull();
+    const nextRun = foldMessage(withReport, {
+      type: "snapshot",
+      report: { runId: "run_p2" } as RunReport,
+    });
+    expect(nextRun.pinnedEntry).toBeNull();
+  });
 });

@@ -450,12 +450,15 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
       expect(membershipNote).not.toContain("OUTSIDE the bounded pooled demo keyspace");
 
       const report = await waitForFinal(app, runId);
-      // The run chased the DERIVED address, not POOLED_ETH, and hit its
-      // draw budget (a lottery never claims exhaustion — the space is not
-      // finishable).
+      // The run chased the DERIVED address, not POOLED_ETH — and the pinned
+      // own phrase genuinely derives it, so the lottery matches at candidate
+      // #1 and ends. Correct behavior by design: the user's phrase is the
+      // pinned benchmark, and the feed freezes with the match proof.
       expect(report.address).toBe(customWallet.derivedAddresses.eth);
-      expect(report.status).toBe("budget-reached");
-      expect(report.match).toBeNull();
+      expect(report.status).toBe("matched");
+      expect(report.match?.mnemonic).toBe(OUT_OF_SPACE);
+      expect(report.match?.address).toBe(customWallet.derivedAddresses.eth);
+      expect(report.match?.discovery).toBe(false);
       expect(report.customWallet.inPooledSpace).toBe(false);
     } finally {
       delete process.env.FAKE_MATCH;
@@ -737,7 +740,7 @@ describe("limited-keyspace mode (vary slots over the full wordlist)", () => {
   });
 });
 
-describe("any-address feasibility probe", () => {
+describe("address-only full-space lottery", () => {
   const FOREIGN_ETH = "0x1111111111111111111111111111111111111111";
   // Fixture-valid phrase — only used to prove probe + customWallet is refused
   // before any derivation happens.
@@ -825,7 +828,7 @@ describe("any-address feasibility probe", () => {
     }
   });
 
-  it("starts a disclosed probe and stamps the report; exhausts honestly", async () => {
+  it("starts the disclosed lottery for any address and ends budget-reached — no coverage claim", async () => {
     process.env.FAKE_MATCH = "0";
     const { app } = await makeApp();
     try {
@@ -838,22 +841,31 @@ describe("any-address feasibility probe", () => {
           address: FOREIGN_ETH,
           workers: 1,
           probe: true,
+          drawBudget: 20000,
         },
       });
       expect(started.statusCode).toBe(201);
-      const { runId, probe, targetNote } = started.json();
-      expect(probe.targetSource).toBe("any-address-probe");
-      expect(probe.searchedSpace).toBe("bundled-pooled-demo-space");
+      const { runId, probe, targetNote, searchKind } = started.json();
+      expect(searchKind).toBe("lottery");
+      expect(probe.targetSource).toBe("addressOnly");
+      expect(probe.searchedSpace).toBe(
+        "all-checksum-valid-12-word-bip39-phrases",
+      );
       expect(probe.declaredSpaceSearched).toBe(false);
-      expect(probe.searchedRawCandidates).toBeGreaterThan(0);
-      expect(probe.searchedChecksumValid).toBeGreaterThan(0);
+      // The searched space is never stamped as a countable candidate total —
+      // the disclosure prose carries the math instead.
+      expect(probe.searchedRawCandidates).toBeNull();
+      expect(probe.searchedChecksumValid).toBeNull();
       expect(targetNote).toBe(probe.disclosure);
       expect(probe.disclosure).toContain("will not be found");
       expect(probe.disclosure).toContain("2^128");
+      expect(probe.disclosure).toContain("1 in 6.7×10^31");
+      expect(probe.disclosure).toContain("never claiming exhaustive coverage");
 
       const report = await waitForFinal(app, runId);
-      // Honest bounded-search outcome: the demo space exhausts without a match.
-      expect(report.status).toBe("exhausted");
+      // Honest lottery outcome: the draw budget is spent without a match —
+      // budget-reached, never "exhausted" (the space is not finishable).
+      expect(report.status).toBe("budget-reached");
       expect(report.match).toBeNull();
       expect(report.address).toBe(FOREIGN_ETH);
       expect(report.probe).toEqual(probe);
@@ -897,11 +909,13 @@ describe("any-address feasibility probe", () => {
     }
   }, 20000);
 
-  it("keeps corpus targets running without probe provenance", async () => {
+  it("applies the same consent gate to corpus targets — no membership exception", async () => {
     process.env.FAKE_MATCH = "0";
     const { app } = await makeApp();
     try {
-      const started = await app.inject({
+      // Even a bundled-corpus address is refused without the probe flag:
+      // the bounded corpus sweep is retired, membership changes nothing.
+      const refused = await app.inject({
         method: "POST",
         url: "/crack",
         payload: {
@@ -911,11 +925,30 @@ describe("any-address feasibility probe", () => {
           workers: 1,
         },
       });
+      expect(refused.statusCode).toBe(422);
+      expect(refused.json().error).toContain("full-space lottery");
+      expect(refused.json().error).toContain("probe");
+
+      // With consent, a corpus address is an ordinary lottery target.
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: POOLED_ETH,
+          workers: 1,
+          probe: true,
+          drawBudget: 20000,
+        },
+      });
       expect(started.statusCode).toBe(201);
-      const { runId } = started.json();
-      const report = await waitForFinal(app, runId);
-      expect(report.status).toBe("exhausted");
-      expect(report.probe).toBeNull();
+      expect(started.json().searchKind).toBe("lottery");
+      const report = await waitForFinal(app, started.json().runId);
+      expect(report.status).toBe("budget-reached");
+      // The probe label always rides address-only lotteries; no seed is
+      // involved, so customWallet stays null.
+      expect(report.probe).not.toBeNull();
       expect(report.customWallet).toBeNull();
     } finally {
       delete process.env.FAKE_MATCH;
@@ -975,7 +1008,10 @@ describe("cancel across run states", () => {
           chain: "ethereum",
           mode: "classic",
           address: POOLED_ETH,
-          workers: 1,
+          // Address-only runs are lotteries now: the consent flag is required
+          // even for a run we cancel immediately, and the default draw budget
+          // keeps the lane alive until the cancel below lands.
+          probe: true,
         },
       });
       expect(started.statusCode).toBe(201);

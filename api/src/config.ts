@@ -26,14 +26,18 @@ export const WORKERS_DEFAULT = 8;
  * manager broadcasts aggregate snapshots over the WebSocket. */
 export const PROGRESS_MS = 250;
 
-/** Toy Grover demo defaults (quantum mode): the toy keyspace is 2^n_bits. */
-export const QUANTUM_BITS_DEFAULT = 8;
-export const QUANTUM_BITS_MAX = 16;
-export const QUANTUM_TIMEOUT_MS = 120_000;
-
-/** Bounds the toy simulation honors — the toy oracle is NOT BIP-39 and must
- * never be presented as wallet recovery (honest-scaling rule). */
-export const QUANTUM_NOTE =
-  "Quantum mode: algorithm decision pending - toy Grover simulation over a tiny demo keyspace only. " +
-  "A real 12-word wallet spans 2^128 phrases (2^132 with checksum bits); Grover's quadratic speedup " +
-  "would still need ~2^64 oracle calls, each costing an impractical reversible BIP-39 circuit.";
+/**
+ * Quantum mode: the classical search leg runs the SAME full-space lottery as
+ * the classic engine (uniform random draws over ALL checksum-valid 12-word
+ * phrases — 2^128 ≈ 3.4×10^38; no toy keyspace). The quantum leg is the app's
+ * closed-form Grover extrapolation panel — nothing runs, nothing spins. The
+ * toy Grover module stays out-of-app (education/CLI only).
+ */
+export const QUANTUM_MODE_NOTE =
+  "Quantum mode: the classical leg runs the full-space lottery — every draw " +
+  "picks all 12 words uniformly at random over checksum-valid phrases " +
+  "(2^128 ≈ 3.4×10^38). The quantum leg is honest math, not a run: Grover " +
+  "would need (π/4)·2^66 ≈ 5.8×10^19 oracle calls, and each call is a " +
+  "reversible PBKDF2→address circuit that no hardware executes coherently " +
+  "even once at meaningful scale. The toy Grover simulator lives outside the " +
+  "app (quantum/grover, education/CLI only).";

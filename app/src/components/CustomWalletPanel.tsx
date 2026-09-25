@@ -3,8 +3,9 @@ import { ApiError, CHAINS, deriveAddresses } from "../api";
 import { etaSeconds } from "../estimate";
 import { formatCount, formatDuration, formatRate } from "../format";
 import { templateSpace, varySlotError } from "../keyspace";
-import type { Chain, DeriveResponse } from "../types";
+import type { Chain, DeriveResponse, Mode } from "../types";
 import { Segmented } from "./Segmented";
+import { LotteryDisclosure } from "./LotteryDisclosure";
 
 /** Everything the panel reports up to App, which owns the /crack request. */
 export interface CustomWalletSelection {
@@ -20,6 +21,8 @@ interface CustomWalletPanelProps {
   chain: Chain;
   /** Shares App's single chain state with the header toggle — one source of truth. */
   onChain: (chain: Chain) => void;
+  /** The search mode: quantum runs the lottery only (no marked-slot sweep). */
+  mode: Mode;
   disabled: boolean;
   /** Pre-run estimate for the current worker setting (app-wide). */
   estimatedRate: number | null;
@@ -66,6 +69,7 @@ function DeriveRow({
 export function CustomWalletPanel({
   chain,
   onChain,
+  mode,
   disabled,
   estimatedRate,
   onDerived,
@@ -248,7 +252,7 @@ export function CustomWalletPanel({
               path={derived.paths.btc_p2pkh}
             />
           </div>
-          {canVary ? (
+          {canVary && mode === "classic" ? (
             <>
               <p className="note">
                 Optional — mark words the run may <strong>vary over the full
@@ -305,6 +309,13 @@ export function CustomWalletPanel({
                 </p>
               )}
             </>
+          ) : canVary && mode === "quantum" ? (
+            <p className="note">
+              Quantum mode runs the full-space lottery with every word random
+              — the odds and the honest Grover math are in the quantum panel
+              below. Marked-slot sweeping is classical-only: switch to Classic
+              mode to vary slots over the full wordlist.
+            </p>
           ) : (
             <p className="note">
               Marked-slot sweeping supports 12-word phrases; this phrase has{" "}
@@ -313,39 +324,25 @@ export function CustomWalletPanel({
               demonstration of scale only.
             </p>
           )}
-          {canVary && (
-            <div className="keyspace-disclosure">
-              <p className="verdict ok">
-                ✓ Full-space lottery (the default run): every draw picks all 12
-                words uniformly at random and keeps only checksum-valid
-                phrases — 2^128 ≈ 3.4×10^38 valid phrases (2048^12 ≈
-                5.4×10^39 raw assemblies before checksum filtering). At
-                ~1,400 draws/s the odds of your exact phrase are about 1 in
-                6.7×10^31 per hour — the expected wait is ~10^28 years, many
-                times the age of the universe. That is the honest
-                demonstration of why real wallets are safe.
-              </p>
-              <p className="note">
-                Your phrase is pinned as the first candidate, labeled “pinned —
-                not random”, before any sampling starts — a reproducible
-                benchmark anchor. If it genuinely derives your address, the run
-                reports a real match at candidate #1 and ends — that is correct
-                behavior, not a bug.
-              </p>
-              <p className="note">
-                Marking 1–2 slots (above) is the maximum-likelihood
-                configuration and the only one that can guarantee finding your
-                own phrase: 1 marked slot ≈ 2,048 candidates (seconds); 2 slots
-                ≈ 4.2 million (~50 minutes at ~1,400 draws/s). Every freed word
-                shrinks the per-hour odds.
-              </p>
-              <p className="note muted">
-                Pool membership (informational):{" "}
-                {derived.poolMembership.inSpace ? "inside" : "outside"} the
-                bounded pooled demo keyspace — the lottery and marked-slot
-                searches do not depend on it.
-              </p>
-            </div>
+          {canVary && mode === "classic" && (
+            <LotteryDisclosure pinnedIsUserPhrase />
+          )}
+          {canVary && mode === "classic" && (
+            <p className="note">
+              Marking 1–2 slots (above) is the maximum-likelihood
+              configuration and the only one that can guarantee finding
+              your own phrase: 1 marked slot ≈ 2,048 candidates (seconds);
+              2 slots ≈ 4.2 million (~50 minutes at ~1,400 draws/s). Every
+              freed word shrinks the per-hour odds.
+            </p>
+          )}
+          {derived !== null && (
+            <p className="note muted">
+              Pool membership (informational):{" "}
+              {derived.poolMembership.inSpace ? "inside" : "outside"} the
+              bounded pooled demo keyspace — the lottery and marked-slot
+              searches do not depend on it.
+            </p>
           )}
         </div>
       )}

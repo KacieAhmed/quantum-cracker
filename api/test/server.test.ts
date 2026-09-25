@@ -255,24 +255,10 @@ describe("api server", () => {
     }
   }, 20000);
 
-  it("runs quantum mode as the honest toy simulation", async () => {
-    const { app, port } = await makeApp({
-      runQuantumFn: async ({ bits }) => ({
-        toy: true as const,
-        result: {
-          mode: "run",
-          n_bits: bits,
-          success: true,
-          found_state: "0110",
-          target: "0110",
-          n_iterations: 2,
-          measurements: { "0110": 1024 },
-          counts: { total: 1024 },
-          seconds: 0.1,
-          simulator: "statevector",
-        },
-      }),
-    });
+  it("runs quantum mode as the full-space lottery with the honest quantum disclosure", async () => {
+    // FAKE_MATCH=0: the fixture always matches its canned ordinal otherwise.
+    process.env.FAKE_MATCH = "0";
+    const { app, port } = await makeApp();
     try {
       const ws = await connect(port);
       const { nextMatching } = collect(ws);
@@ -284,18 +270,37 @@ describe("api server", () => {
           chain: "ethereum",
           mode: "quantum",
           address: POOLED_ETH,
-          quantumBits: 4,
+          workers: 1,
+          probe: true,
         },
       });
       expect(res.statusCode).toBe(201);
-      expect(res.json().note).toContain("algorithm decision pending");
+      const start = res.json();
+      // The classical leg is the SAME lottery the own-wallet default runs:
+      // full space, budgeted, seeded — odds disclosed BEFORE the start.
+      expect(start.searchKind).toBe("lottery");
+      expect(typeof start.drawBudget).toBe("number");
+      expect(start.drawBudget).toBeGreaterThan(0);
+      // A lottery run's candidate count is its budget cap — the run never
+      // pretends it could sweep the space (2^128 lives in the note).
+      expect(start.totalCandidates).toBe(start.drawBudget);
+      expect(start.note).toContain("Full-space lottery");
+      expect(start.note).toContain("2^128 ≈ 3.4×10^38 valid phrases");
+      // Corpus run: the calibration phrase is pinned, labeled not random.
+      expect(start.note).toContain("The calibration phrase");
+      expect(start.note).toContain("pinned — not random");
+      // The quantum leg's honest math rides along in the note.
+      expect(start.note).toContain("(π/4)·2^66 ≈ 5.8×10^19 oracle calls");
 
       const doneMsg = await nextMatching((m) => m.type === "done");
       if (doneMsg.type !== "done") throw new Error("unreachable");
-      expect(doneMsg.report.status).toBe("quantum_demo");
-      expect(doneMsg.report.quantum?.toy).toBe(true);
+      // Budget end — a coverage-bounded end state, never an exhaustion claim.
+      expect(doneMsg.report.status).toBe("budget-reached");
+      expect(doneMsg.report.mode).toBe("quantum");
+      expect(doneMsg.report.match).toBeNull();
       ws.close();
     } finally {
+      delete process.env.FAKE_MATCH;
       await app.close();
     }
   }, 20000);
@@ -542,24 +547,8 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
     }
   });
 
-  it("supports custom wallets in quantum mode", async () => {
-    const { app } = await makeApp({
-      runQuantumFn: async ({ bits }) => ({
-        toy: true as const,
-        result: {
-          mode: "run",
-          n_bits: bits,
-          success: true,
-          found_state: "0110",
-          target: "0110",
-          n_iterations: 2,
-          measurements: { "0110": 1024 },
-          counts: { total: 1024 },
-          seconds: 0.1,
-          simulator: "statevector",
-        },
-      }),
-    });
+  it("supports custom wallets in quantum mode — own-phrase pin, lottery leg", async () => {
+    const { app } = await makeApp();
     try {
       const res = await app.inject({
         method: "POST",
@@ -567,7 +556,6 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
         payload: {
           chain: "ethereum",
           mode: "quantum",
-          quantumBits: 4,
           customWallet: { mnemonic: IN_SPACE },
         },
       });
@@ -575,6 +563,10 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
       expect(res.json().customWallet.targetSource).toBe(
         "derived-from-mnemonic",
       );
+      // The quantum start discloses the lottery leg with the user's phrase
+      // pinned first (labeled not random).
+      expect(res.json().searchKind).toBe("lottery");
+      expect(res.json().note).toContain("Your own phrase is pinned");
     } finally {
       await app.close();
     }
@@ -696,7 +688,7 @@ describe("limited-keyspace mode (vary slots over the full wordlist)", () => {
     }
   });
 
-  it("rejects vary slots in quantum mode — the toy sim has no phrase to contain", async () => {
+  it("rejects vary slots in quantum mode — the lottery draws all 12 words", async () => {
     const { app } = await makeApp();
     try {
       const res = await app.inject({
@@ -705,7 +697,6 @@ describe("limited-keyspace mode (vary slots over the full wordlist)", () => {
         payload: {
           chain: "ethereum",
           mode: "quantum",
-          quantumBits: 4,
           customWallet: { mnemonic: PHRASE, varySlots: [1] },
         },
       });
@@ -807,7 +798,7 @@ describe("address-only full-space lottery", () => {
     }
   });
 
-  it("refuses probe in quantum mode — the toy sim is a separate demo", async () => {
+  it("runs a probe quantum run as the same consented lottery, labeled quantum", async () => {
     const { app } = await makeApp();
     try {
       const started = await app.inject({
@@ -821,8 +812,15 @@ describe("address-only full-space lottery", () => {
           probe: true,
         },
       });
-      expect(started.statusCode).toBe(422);
-      expect(started.json().error).toContain("classical full-space search");
+      // Quantum mode's classical leg IS the address-only full-space lottery:
+      // same consent (probe), same calibration pin, same budget semantics —
+      // only the mode label and the quantum scope note differ.
+      expect(started.statusCode).toBe(201);
+      const body = started.json();
+      expect(body.mode).toBe("quantum");
+      expect(body.searchKind).toBe("lottery");
+      expect(body.probe).toBeDefined();
+      expect(body.note).toContain("Quantum mode");
     } finally {
       await app.close();
     }
@@ -1150,9 +1148,7 @@ describe("cancel across run states", () => {
   });
 
   it("returns 404 when cancelling a run that already finished", async () => {
-    const { app } = await makeApp({
-      runQuantumFn: async ({ bits }) => ({ toy: true as const, n_bits: bits }),
-    });
+    const { app } = await makeApp();
     try {
       const started = await app.inject({
         method: "POST",
@@ -1161,14 +1157,22 @@ describe("cancel across run states", () => {
           chain: "ethereum",
           mode: "quantum",
           address: POOLED_ETH,
-          quantumBits: 4,
+          workers: 1,
+          probe: true,
         },
       });
       expect(started.statusCode).toBe(201);
       const { runId } = started.json();
 
-      // Let the toy simulation settle and finalize the run.
-      await new Promise((r) => setTimeout(r, 300));
+      // Let the lottery spend its draw budget and finalize the run.
+      const deadline = Date.now() + 15000;
+      for (;;) {
+        const poll = await app.inject({ method: "GET", url: `/runs/${runId}` });
+        const report = poll.json() as Record<string, unknown>;
+        if (report.status !== "running") break;
+        if (Date.now() > deadline) throw new Error("run did not finish in time");
+        await new Promise((r) => setTimeout(r, 100));
+      }
 
       const res = await app.inject({
         method: "POST",

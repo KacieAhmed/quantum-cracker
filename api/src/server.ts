@@ -9,9 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   PER_CORE_DERIVATIONS_PER_SEC,
   PROGRESS_MS,
-  QUANTUM_BITS_DEFAULT,
-  QUANTUM_BITS_MAX,
-  QUANTUM_NOTE,
+  QUANTUM_MODE_NOTE,
   WORKERS_DEFAULT,
   WORKERS_HARD_MAX,
 } from "./config.js";
@@ -30,7 +28,6 @@ import {
   type WordlistDoc,
 } from "./cli.js";
 import { RunManager } from "./runManager.js";
-import { makeQuantumRunner } from "./quantum.js";
 import type {
   Chain,
   CustomWalletProvenance,
@@ -45,15 +42,11 @@ import type { WebSocket } from "ws";
 export interface BuildAppOptions {
   cliPath: string;
   runsDir: string;
-  groverSrcDir: string;
-  pythonBin?: string;
   /** Inject a fixture corpus (tests); otherwise loaded from the engine. */
   corpus?: CorpusDoc;
   broadcastIntervalMs?: number;
   /** Injectable for tests: lane progress cadence (default config). */
   progressMs?: number;
-  /** Injectable for tests: toy Grover runner. */
-  runQuantumFn?: (params: { bits: number }) => Promise<unknown>;
   /** Injectable for tests: deterministic host capabilities. */
   systemInfoFn?: () => ReturnType<typeof systemInfo>;
   /**
@@ -103,7 +96,6 @@ interface CrackBody {
   address?: string;
   workers?: number;
   force?: boolean;
-  quantumBits?: number;
   /** "Test with your own wallet": derive the target from this mnemonic. */
   customWallet?: CustomWalletBody;
   /**
@@ -143,7 +135,6 @@ const crackBodySchema = {
       minimum: 1_000,
       maximum: LOTTERY_DRAWS_MAX,
     },
-    quantumBits: { type: "integer", minimum: 2, maximum: QUANTUM_BITS_MAX },
     customWallet: {
       type: "object",
       required: ["mnemonic"],
@@ -379,12 +370,6 @@ export async function buildApp(
     cliPath: options.cliPath,
     runsDir: options.runsDir,
     broadcastIntervalMs: options.broadcastIntervalMs,
-    runQuantumFn:
-      options.runQuantumFn ??
-      makeQuantumRunner({
-        pythonBin: options.pythonBin ?? "python3",
-        groverSrcDir: options.groverSrcDir,
-      }),
   });
 
   const broadcast = (msg: ServerMessage): void => {
@@ -647,13 +632,13 @@ export async function buildApp(
         }
         // Limited-keyspace mode: declared slots vary over the full BIP-39
         // list, every other position stays fixed, and the disclosed keyspace
-        // contains the true phrase by construction. Classical only — the
-        // toy Grover simulation has no user phrase to contain.
+        // contains the true phrase by construction. Classical only — quantum
+        // mode's search leg is the full-space lottery, not a marked-slot sweep.
         const varySlots = body.customWallet.varySlots ?? [];
         if (varySlots.length > 0 && body.mode === "quantum") {
           return reply.code(422).send({
             error:
-              "the limited-keyspace search is classical-only — quantum mode is a toy Grover simulation over the bundled tiny keyspace, not your phrase",
+              "the limited-keyspace sweep is classical-only — quantum mode runs the full-space lottery (all 12 words random) beside the Grover extrapolation panel, so there are no fixed words to vary",
           });
         }
         const phraseWords = derivation.mnemonic.trim().split(/\s+/);
@@ -756,64 +741,32 @@ export async function buildApp(
         // as own-wallet mode, no bounded corpus sweep exists on this path.
         // The probe flag is the user's consent to the disclosed odds; any
         // valid address is a legitimate lottery target (rich-list quick
-        // picks included), corpus member or not — there is no membership
-        // gate left on this path. Quantum mode is exempt: the toy Grover
-        // simulation never searches the address space, so there are no odds
-        // to consent to (and probe+quantum is rejected below anyway).
-        if (body.mode === "classic") {
-          if (body.probe !== true) {
-            return reply.code(422).send({
-              error:
-                'address-only runs are a full-space lottery over every checksum-valid 12-word phrase (2^128 ≈ 3.4×10^38) — resend with "probe": true to accept the disclosed odds, or supply customWallet to derive the target from your own seed phrase',
-            });
-          }
-          addressOnlyBudget = Math.min(
-            body.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
-            LOTTERY_DRAWS_MAX,
-          );
-          addressOnlySeed = newSeed();
-          const wl = await ensureWatchlist();
-          probe = {
-            targetSource: "addressOnly",
-            searchedSpace: "all-checksum-valid-12-word-bip39-phrases",
-            searchedRawCandidates: null,
-            searchedChecksumValid: null,
-            declaredSpaceSearched: false,
-            disclosure: addressOnlyDisclosure(addressOnlyBudget, wl.size),
-          };
-        }
-      }
-
-      if (body.mode === "quantum") {
-        if (body.probe === true) {
+        // picks included), corpus member or not. Quantum mode runs the same
+        // lottery as its classical leg, so the same consent applies.
+        if (body.probe !== true) {
           return reply.code(422).send({
             error:
-              "the address-only lottery is a classical full-space search — the toy Grover simulation is a separate demo (its tiny bounded space is a physics demo, not an address search)",
+              'address-only runs are a full-space lottery over every checksum-valid 12-word phrase (2^128 ≈ 3.4×10^38) — resend with "probe": true to accept the disclosed odds, or supply customWallet to derive the target from your own seed phrase',
           });
         }
-        const bits = Math.min(
-          body.quantumBits ?? QUANTUM_BITS_DEFAULT,
-          QUANTUM_BITS_MAX,
+        addressOnlyBudget = Math.min(
+          body.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
+          LOTTERY_DRAWS_MAX,
         );
-        const report = runManager.startQuantum(
-          { runId, chain: body.chain, address: targetAddress, bits, customWallet },
-          broadcast,
-        );
-        return reply.code(201).send({
-          runId: report.runId,
-          mode: "quantum",
-          totalCandidates: report.totalCandidates,
-          note: QUANTUM_NOTE,
-          ...(customWallet !== null
-            ? {
-                customWallet,
-                targetNote: poolMembershipNote(customWallet),
-              }
-            : {}),
-        });
+        addressOnlySeed = newSeed();
+        const wl = await ensureWatchlist();
+        probe = {
+          targetSource: "addressOnly",
+          searchedSpace: "all-checksum-valid-12-word-bip39-phrases",
+          searchedRawCandidates: null,
+          searchedChecksumValid: null,
+          declaredSpaceSearched: false,
+          disclosure: addressOnlyDisclosure(addressOnlyBudget, wl.size),
+        };
       }
 
-      // Address-only lotteries: ANY valid address, consented odds, the
+      // Address-only lotteries (classic or quantum — the classical legs are
+      // the same lottery class): ANY valid address, consented odds, the
       // calibration phrase pinned first, discovery watchlist armed. This is
       // the only address-only path — no bounded corpus sweep exists here.
       if (probe !== null) {
@@ -830,34 +783,46 @@ export async function buildApp(
             pinnedFirst: CALIBRATION_PHRASE,
             probe,
             watchlistPath: wl.path,
+            ...(body.mode === "quantum" ? { mode: "quantum" } : {}),
           },
           broadcast,
         );
         return reply.code(201).send({
           runId: report.runId,
-          mode: "classic",
+          mode: body.mode,
           searchKind: "lottery",
           drawBudget: addressOnlyBudget ?? LOTTERY_DRAWS_DEFAULT,
           seed: addressOnlySeed,
           totalCandidates: report.totalCandidates,
-          note: lotteryNote(false, wl.size),
+          note:
+            body.mode === "quantum"
+              ? `${lotteryNote(false, wl.size)} ${QUANTUM_MODE_NOTE}`
+              : lotteryNote(false, wl.size),
           probe,
           targetNote: probe.disclosure,
         });
       }
 
-      // Own-wallet default (no marked slots): a full-space lottery — all 12
-      // words drawn uniformly at random over checksum-valid phrases, honest
-      // odds disclosed in the response, the user's phrase pinned as the
-      // first candidate. The classic bounded path below is for marked-slot
-      // own-wallet sweeps.
-      if (customWallet !== null && limitedKeyspace === null) {
+      // ONE lottery class, two labels: quantum mode's classical search leg
+      // and the own-wallet default are the SAME full-space lottery — uniform
+      // random draws over ALL checksum-valid 12-word phrases (2^128), odds
+      // disclosed in the response, pinned first candidate, ends at budget or
+      // cancel with no coverage claim. The quantum leg itself is the app's
+      // closed-form Grover extrapolation panel — nothing runs server-side.
+      // The classic bounded path below is for marked-slot own-wallet sweeps
+      // and corpus searches.
+      if (body.mode === "quantum" || (customWallet !== null && limitedKeyspace === null)) {
+        const pinnedIsUserPhrase = customWallet !== null;
         const drawBudget = Math.min(
           body.customWallet?.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
           LOTTERY_DRAWS_MAX,
         );
         const seed = newSeed();
         const wl = await ensureWatchlist();
+        const note =
+          body.mode === "quantum"
+            ? `${lotteryNote(pinnedIsUserPhrase, wl.size)} ${QUANTUM_MODE_NOTE}`
+            : lotteryNote(pinnedIsUserPhrase, wl.size);
         const report = runManager.startLottery(
           {
             runId,
@@ -868,24 +833,34 @@ export async function buildApp(
             progressMs: options.progressMs ?? PROGRESS_MS,
             customWallet,
             seed,
-            pinnedFirst: body.customWallet?.mnemonic ?? null,
+            // Own-wallet runs pin the user's phrase; corpus/quantum runs pin
+            // the calibration phrase for Kacie's benchmark anchor.
+            pinnedFirst: pinnedIsUserPhrase
+              ? (body.customWallet?.mnemonic ?? null)
+              : CALIBRATION_PHRASE,
             // In-request derivation attests the target: the engine's
-            // derived-target permission applies, not the probe label.
-            derivedTarget: true,
+            // derived-target permission applies, not the probe label. Quantum
+            // runs without a wallet have no in-request derivation.
+            ...(customWallet !== null ? { derivedTarget: true } : {}),
             watchlistPath: wl.path,
+            ...(body.mode === "quantum" ? { mode: "quantum" } : {}),
           },
           broadcast,
         );
         return reply.code(201).send({
           runId: report.runId,
-          mode: "classic",
+          mode: body.mode,
           searchKind: "lottery",
           drawBudget,
           seed,
           totalCandidates: report.totalCandidates,
-          note: lotteryNote(true, wl.size),
-          poolMembershipNote: poolMembershipNote(customWallet),
-          customWallet,
+          note,
+          ...(customWallet !== null
+            ? {
+                customWallet,
+                poolMembershipNote: poolMembershipNote(customWallet),
+              }
+            : {}),
         });
       }
 

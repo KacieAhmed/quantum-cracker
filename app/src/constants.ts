@@ -1,21 +1,28 @@
 /**
- * Client-side constants. QUANTUM_NOTE mirrors api/src/config.ts — keep the
- * two in sync (the API also echoes it in the /crack quantum response).
+ * Client-side constants. QUANTUM_MODE_NOTE mirrors api/src/config.ts — keep
+ * the two in sync (the API also echoes it in the /crack quantum response).
  */
-export const QUANTUM_NOTE =
-  "Quantum mode: algorithm decision pending - toy Grover simulation over a tiny demo keyspace only. " +
-  "A real 12-word wallet spans 2^128 phrases (2^132 with checksum bits); Grover's quadratic speedup " +
-  "would still need ~2^64 oracle calls, each costing an impractical reversible BIP-39 circuit.";
+export const QUANTUM_MODE_NOTE =
+  "Quantum mode: the classical leg runs the full-space lottery — every draw " +
+  "picks all 12 words uniformly at random over checksum-valid phrases " +
+  "(2^128 ≈ 3.4×10^38). The quantum leg is honest math, not a run: Grover " +
+  "would need (π/4)·2^66 ≈ 5.8×10^19 oracle calls, and each call is a " +
+  "reversible PBKDF2→address circuit that no hardware executes coherently " +
+  "even once at meaningful scale. The toy Grover simulator lives outside the " +
+  "app (quantum/grover, education/CLI only).";
 
 /** The standing honesty note shown wherever results or estimates appear. */
 export const SCOPE_NOTE =
-  "Demo scope: address-only runs are consented, budget-limited lotteries over ALL " +
-  "checksum-valid 12-word BIP-39 phrases — 2^128 ≈ 3.4×10^38 of them (2^132 including " +
-  "checksum bits), with raw pre-checksum assemblies at 2048^12 ≈ 5.4×10^39. Unreachable " +
-  "classically, and Grover's quadratic speedup would still need ~2^64 oracle calls on an " +
-  "impractical reversible BIP-39 circuit. Only limited-keyspace own-wallet runs search a " +
-  "finishable space (built from the user's own seed knowledge), and no real wallet that " +
-  "the user does not already hold the seed for can be recovered with this tool.";
+  "Demo scope: corpus searches in Classic mode cover only the bundled demo corpora — a pooled " +
+  "16^6 = 2^24-phrase space (1,048,576 checksum-valid candidates). Address-only, own-wallet, and " +
+  "quantum runs are consented, budget-limited lotteries over ALL checksum-valid 12-word BIP-39 " +
+  "phrases — 2^128 ≈ 3.4×10^38 of them (2^132 including checksum bits), with raw pre-checksum " +
+  "assemblies at 2048^12 ≈ 5.4×10^39. Unreachable classically, and Grover's quadratic speedup " +
+  "would still need (π/4)·2^66 ≈ 5.8×10^19 oracle calls on an impractical reversible BIP-39 " +
+  "circuit. Only limited-keyspace own-wallet runs search a finishable space (built from the " +
+  "user's own seed knowledge). Outside the demo corpora a match happens only by lottery odds or " +
+  "because the phrase was supplied directly — no real wallet whose seed the user does not " +
+  "already hold can be recovered with this tool.";
 
 /**
  * Pre-start odds disclosure for address-only lottery runs — mirrors the API's

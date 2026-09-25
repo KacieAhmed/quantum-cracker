@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyRunUiState, foldMessage } from "./reducer";
-import type { MatchInfo, RunReport, ServerMessage } from "./types";
+import type { MatchInfo, RunReport } from "./types";
 
 function fakeReport(overrides: Partial<RunReport> = {}): RunReport {
   return {
@@ -18,7 +18,6 @@ function fakeReport(overrides: Partial<RunReport> = {}): RunReport {
     elapsedMs: null,
     aggregate: null,
     match: null,
-    quantum: null,
     ...overrides,
   };
 }
@@ -83,14 +82,16 @@ describe("foldMessage", () => {
     expect(state.report?.status).toBe("matched");
   });
 
-  it("quantum_result stores the payload", () => {
-    const msg: ServerMessage = {
-      type: "quantum_result",
-      runId: "run_q1",
-      payload: { grover_iterations: 12, measured: "101" },
-    };
-    const state = foldMessage(emptyRunUiState, msg);
-    expect(state.quantumPayload).toEqual({ grover_iterations: 12, measured: "101" });
+  it("budget-reached replaces the report and records the terminal status", () => {
+    let state = foldMessage(emptyRunUiState, { type: "snapshot", report: fakeReport() });
+    state = foldMessage(state, {
+      type: "done",
+      runId: "run_test_1",
+      status: "budget-reached",
+      report: fakeReport({ status: "budget-reached" }),
+    });
+    expect(state.lastDone).toEqual({ runId: "run_test_1", status: "budget-reached" });
+    expect(state.report?.status).toBe("budget-reached");
   });
 
   it("error records the message", () => {

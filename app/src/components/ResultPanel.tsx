@@ -1,5 +1,4 @@
 import { formatCount, formatDuration, formatRate } from "../format";
-import { QUANTUM_NOTE } from "../constants";
 import type { RunUiState } from "../reducer";
 import type { Chain, MatchInfo, RunReport } from "../types";
 import { Infeasibility } from "./Infeasibility";
@@ -53,6 +52,16 @@ function MatchCard({
       className="card result matched"
       aria-label={discovery ? "Discovery — watchlist address derived" : "Match found"}
     >
+      {/* Freeze UX: the engine stopped drawing the moment this matched — the
+          run is frozen, the live feed has gone quiet, and the phrase below is
+          the one thing to read. Applies to requested-target matches and
+          watchlist discoveries alike: the run stops for both. */}
+      <div className="match-banner" role="status">
+        <h2>❄ Run frozen — {discovery ? "stopped on a watchlist discovery" : "seed phrase recovered"}</h2>
+        <span className="match-sub">
+          engine stopped drawing · live feed quiet · phrase and proof below
+        </span>
+      </div>
       {discovery ? (
         <>
           <div className="card-title-row">
@@ -84,7 +93,7 @@ function MatchCard({
           <span className="proof-label">
             {discovery ? "recovered phrase (derives the watchlist address)" : "recovered seed phrase"}
           </span>
-          <span className="kv-value mono phrase">{match.mnemonic}</span>
+          <span className="kv-value mono match-phrase">{match.mnemonic}</span>
         </div>
         <div className="proof-cell">
           <span className="proof-label">address derived from it (path {derivationPath})</span>
@@ -179,7 +188,7 @@ function ExhaustedCard({ report }: { report: RunReport }) {
         cannot recover real wallets. The measured rate makes the real-space scale concrete: at{" "}
         {agg === null ? "this" : formatRate(agg.derivedPerSec)}, sweeping 2^128 phrases would take
         far longer than the age of the universe, and Grover's quadratic speedup would still need
-        ~2^64 oracle calls.
+        (π/4)·2^66 ≈ 5.8×10^19 oracle calls on an impractical reversible BIP-39 circuit.
       </p>
       <Infeasibility />
     </section>
@@ -227,7 +236,7 @@ function BudgetReachedCard({ report }: { report: RunReport }) {
         the run never claimed exhaustive coverage, before or after. At{" "}
         {agg === null ? "this" : formatRate(agg.derivedPerSec)}, sweeping 2^128 phrases would take
         far longer than the age of the universe, and Grover's quadratic speedup would still need
-        ~2^64 oracle calls.
+        (π/4)·2^66 ≈ 5.8×10^19 oracle calls.
       </p>
       <Infeasibility />
     </section>
@@ -242,26 +251,6 @@ function ErrorCard({ report }: { report: RunReport }) {
         The run ended in an error state. Check the API process output; the per-run report under{" "}
         <code>api/runs/{report.runId}.json</code> has the lane details.
       </p>
-      <Infeasibility />
-    </section>
-  );
-}
-
-function QuantumCard({ report, payload }: { report: RunReport; payload: unknown }) {
-  return (
-    <section className="card result quantum" aria-label="Quantum demo result">
-      <div className="card-title-row">
-        <h2>Quantum mode — toy Grover simulation</h2>
-        <span className="level-badge amber">algorithm decision pending</span>
-      </div>
-      <p className="note">{QUANTUM_NOTE}</p>
-      <p className="note">
-        This is a simulation over a {formatCount(report.totalCandidates)}-item demo keyspace. It is
-        not a wallet search and its output is not a recovered wallet.
-      </p>
-      {payload !== null && payload !== undefined && (
-        <pre className="mono quantum-payload">{JSON.stringify(payload, null, 2)}</pre>
-      )}
       <Infeasibility />
     </section>
   );
@@ -290,7 +279,5 @@ export function ResultPanel({ ui, chain }: ResultPanelProps) {
       return <CancelledCard report={report} />;
     case "error":
       return <ErrorCard report={report} />;
-    case "quantum_demo":
-      return <QuantumCard report={report} payload={ui.quantumPayload ?? report.quantum} />;
   }
 }

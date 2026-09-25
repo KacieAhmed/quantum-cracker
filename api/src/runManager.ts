@@ -72,14 +72,12 @@ export interface StartLotteryParams {
   derivedTarget?: boolean;
   /** Discovery watchlist file passed to the lane (--watchlist). */
   watchlistPath?: string | null;
-}
-
-export interface StartQuantumParams {
-  runId: string;
-  chain: Chain;
-  address: string;
-  bits: number;
-  customWallet?: CustomWalletProvenance | null;
+  /**
+   * The report's mode label: "classic" for classic runs, "quantum" when the
+   * lottery is the classical leg of quantum mode. Traversal is identical —
+   * only the UI framing differs.
+   */
+  mode?: Mode;
 }
 
 /** Broadcast sink (the server wires this to every connected WebSocket). */
@@ -92,8 +90,6 @@ export interface RunManagerOptions {
   broadcastIntervalMs?: number;
   /** Injectable for tests: spawns a lane subprocess. */
   spawnLaneFn?: typeof spawnLane;
-  /** Injectable for tests: runs the toy Grover simulation. */
-  runQuantumFn?: (params: { bits: number }) => Promise<unknown>;
 }
 
 interface ActiveRun {
@@ -103,7 +99,6 @@ interface ActiveRun {
   status: RunStatus;
   match: MatchInfo | null;
   firstMatchWorker: number | null;
-  quantumPayload: unknown | null;
   errorMessage: string | null;
   broadcastTimer: NodeJS.Timeout | null;
   broadcast: Broadcast;
@@ -120,7 +115,6 @@ export class RunManager {
     Pick<RunManagerOptions, "cliPath" | "runsDir" | "broadcastIntervalMs">
   >;
   private readonly spawnLaneFn: typeof spawnLane;
-  private readonly runQuantumFn: (params: { bits: number }) => Promise<unknown>;
   private active: ActiveRun | null = null;
 
   constructor(options: RunManagerOptions) {
@@ -130,11 +124,6 @@ export class RunManager {
       broadcastIntervalMs: options.broadcastIntervalMs ?? 250,
     };
     this.spawnLaneFn = options.spawnLaneFn ?? spawnLane;
-    this.runQuantumFn =
-      options.runQuantumFn ??
-      (async () => {
-        throw new Error("quantum runner not configured");
-      });
   }
 
   get activeRunId(): string | null {
@@ -166,7 +155,6 @@ export class RunManager {
       status: "running",
       match: null,
       firstMatchWorker: null,
-      quantumPayload: null,
       errorMessage: null,
       broadcastTimer: null,
       broadcast,
@@ -210,14 +198,15 @@ export class RunManager {
    * Full-space lottery: one lane samples raw phrases uniformly at random
    * over ALL checksum-valid 12-word assemblies (2^128 ≈ 3.4×10^38 of them)
    * until the draw budget is spent or the run is stopped. No coverage
-   * claim — the caller's disclosure copy states the odds up front.
+   * claim — the caller's disclosure copy states the odds up front. Also
+   * the classical search leg of quantum mode (mode label "quantum").
    */
   startLottery(params: StartLotteryParams, broadcast: Broadcast): RunReport {
     if (this.active) throw new Error("a run is already active");
     const report = newReport({
       runId: params.runId,
       chain: params.chain,
-      mode: "classic",
+      mode: params.mode ?? "classic",
       address: params.address,
       workersRequested: 1,
       // The run's bounded resource is the draw budget, not the space.
@@ -235,7 +224,6 @@ export class RunManager {
       status: "running",
       match: null,
       firstMatchWorker: null,
-      quantumPayload: null,
       errorMessage: null,
       broadcastTimer: null,
       broadcast,
@@ -272,45 +260,6 @@ export class RunManager {
     return report;
   }
 
-  startQuantum(params: StartQuantumParams, broadcast: Broadcast): RunReport {
-    if (this.active) throw new Error("a run is already active");
-    const lane = emptyLane(0, { start: 0, count: 0 });
-    lane.id = 0;
-    const report = newReport({
-      runId: params.runId,
-      chain: params.chain,
-      mode: "quantum",
-      address: params.address,
-      workersRequested: 1,
-      totalCandidates: 2 ** params.bits,
-      rawCandidates: 2 ** params.bits,
-      lanes: [lane],
-      customWallet: params.customWallet ?? null,
-      probe: null,
-    });
-    const run: ActiveRun = {
-      report,
-      startedAtMs: Date.now(),
-      procs: new Map(),
-      status: "running",
-      match: null,
-      firstMatchWorker: null,
-      quantumPayload: null,
-      errorMessage: null,
-      broadcastTimer: null,
-      broadcast,
-      onSettled: null,
-    };
-    this.active = run;
-    run.broadcastTimer = setInterval(
-      () => this.broadcastSnapshot(),
-      this.opts.broadcastIntervalMs,
-    );
-    this.broadcastSnapshot();
-    void this.consumeQuantum(run, params.bits);
-    return report;
-  }
-
   /** Halt the active run: kill every lane; settle() finalizes as cancelled. */
   cancel(): boolean {
     const run = this.active;
@@ -337,6 +286,7 @@ export class RunManager {
         this.applyEvent(run, lane, proc.lane.id, event);
       }
       const { code, signal } = await proc.exited;
+      const cancelled = run.status === "cancelled";
       if (signal !== null || code === null) {
         // Killed lanes: the run manager stopped them (cancel, or cancel-on-
         // match), which is not a lane error. Anything else is real.
@@ -345,7 +295,18 @@ export class RunManager {
             ? "killed"
             : "error";
       } else {
-        lane.status = code === 0 ? "done" : code === 1 ? "done" : "error";
+        lane.status = code === 0 || code === 1 ? "done" : "error";
+      }
+      if (lane.status === "error" && !cancelled) {
+        // A lane that died on its own must say why — the engine's stderr is
+        // the only diagnostic for usage errors and panics. Swallowing it
+        // turns a diagnosable failure into a silent "error" status.
+        const stderr = (await proc.stderr).trim();
+        run.errorMessage =
+          run.errorMessage ??
+          `lane ${proc.lane.id} exited with ${signal ?? `code ${code}`}${
+            stderr.length > 0 ? `: ${stderr}` : " (no stderr output)"
+          }`;
       }
     } catch (err) {
       lane.status = "error";
@@ -434,33 +395,11 @@ export class RunManager {
     }
   }
 
-  private async consumeQuantum(run: ActiveRun, bits: number): Promise<void> {
-    const lane = run.report.lanes[0];
-    if (lane) lane.status = "running";
-    try {
-      const payload = await this.runQuantumFn({ bits });
-      run.quantumPayload = payload;
-      run.status = "quantum_demo";
-      run.broadcast({
-        type: "quantum_result",
-        runId: run.report.runId,
-        payload,
-      });
-    } catch (err) {
-      run.status = "error";
-      run.errorMessage =
-        run.errorMessage ?? `toy Grover simulation: ${String(err)}`;
-    }
-    this.settleIfComplete(run);
-  }
-
   private settleIfComplete(run: ActiveRun): void {
     const allSettled = [...run.procs.values()].every((p) => {
       const lane = run.report.lanes[p.lane.id];
       return lane && lane.status !== "starting" && lane.status !== "running";
     });
-    // Classic runs settle once every lane subprocess has exited; quantum runs
-    // have no subprocesses and settle only when consumeQuantum calls this.
     if (!allSettled) return;
     this.finalize(run);
   }
@@ -482,7 +421,6 @@ export class RunManager {
     }
     run.report.status = run.status;
     run.report.match = run.match;
-    run.report.quantum = run.quantumPayload;
     run.report.finishedAt = new Date().toISOString();
     run.report.elapsedMs = Date.now() - run.startedAtMs;
     run.report.aggregate = this.aggregateOf(run);
@@ -572,7 +510,6 @@ function newReport(args: {
     elapsedMs: null,
     aggregate: null,
     match: null,
-    quantum: null,
     customWallet: args.customWallet,
     probe: args.probe,
   };

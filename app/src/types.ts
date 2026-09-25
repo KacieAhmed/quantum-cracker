@@ -114,8 +114,7 @@ export type RunStatus =
   | "exhausted"
   | "budget-reached"
   | "cancelled"
-  | "error"
-  | "quantum_demo";
+  | "error";
 
 export interface Aggregate {
   derived: number;
@@ -140,7 +139,6 @@ export interface RunReport {
   elapsedMs: number | null;
   aggregate: Aggregate | null;
   match: MatchInfo | null;
-  quantum: unknown | null;
   /** Set when the run's target was derived from a user-supplied seed phrase. */
   customWallet?: CustomWalletProvenance | null;
   /** Set when the run is a consented address-only full-space lottery. */
@@ -159,7 +157,6 @@ export type ServerMessage =
   | { type: "snapshot"; report: RunReport }
   | { type: "match"; runId: string; match: MatchInfo; workerId: number }
   | { type: "done"; runId: string; status: RunStatus; report: RunReport }
-  | { type: "quantum_result"; runId: string; payload: unknown }
   | { type: "error"; runId: string | null; message: string }
   /**
    * The pinned first candidate was tested before any traversal/sampling
@@ -217,7 +214,6 @@ export interface CrackRequest {
   address?: string;
   workers?: number;
   force?: boolean;
-  quantumBits?: number;
   /** "Test with your own wallet": the target is derived from this mnemonic. */
   customWallet?: {
     mnemonic: string;
@@ -256,13 +252,22 @@ export interface ClassicStart {
   targetNote?: string;
 }
 
+/**
+ * Quantum mode start: the classical search leg is the SAME full-space
+ * lottery as classic mode's own-wallet default (drawBudget, seed, pinned
+ * first candidate); the quantum leg is the app's closed-form extrapolation
+ * panel — nothing runs server-side.
+ */
 export interface QuantumStart {
   runId: string;
   mode: "quantum";
+  searchKind: "lottery";
+  drawBudget: number;
+  seed: string;
   totalCandidates: number;
   note: string;
   customWallet?: CustomWalletProvenance;
-  targetNote?: string;
+  poolMembershipNote?: string;
 }
 
 export interface LotteryStart {

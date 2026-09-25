@@ -17,6 +17,7 @@ import type { CustomWalletSelection } from "./components/CustomWalletPanel";
 import { Header } from "./components/Header";
 import { AddressPanel } from "./components/AddressPanel";
 import { CustomWalletPanel } from "./components/CustomWalletPanel";
+import { PreSeedPanel } from "./components/PreSeedPanel";
 import { WorkerSlider } from "./components/WorkerSlider";
 import { QuantumPanel } from "./components/QuantumPanel";
 import { StatsBar } from "./components/StatsBar";
@@ -97,6 +98,10 @@ export default function App() {
   // Lottery runs sample the full 2^128 space: they have no finishable
   // keyspace, so coverage fractions and ETAs are meaningless and never shown.
   const lotteryRun = report?.searchKind === "lottery";
+  // Pre-seed mode: targetless by construction — the Satoshi-era watchlist is
+  // the target set. The panel replaces every target input, and start needs
+  // only consent.
+  const preseedMode = mode === "preseed";
   // Address-only classic runs are the consented full-space lottery — one
   // random-sampling lane with a disclosed draw budget; no worker knob.
   const addressOnlyLottery = !walletMode && mode === "classic";
@@ -194,7 +199,16 @@ export default function App() {
   const start = async (): Promise<void> => {
     setStartError(null);
     try {
-      if (walletMode && customWallet !== null && customWallet.derived !== null) {
+      if (preseedMode) {
+        // Targetless: no address, no wallet, no workers — one draw lane at
+        // the server's disclosed budget. probe:true is the user's informed
+        // consent to the odds shown in the PreSeedPanel disclosure.
+        await startCrack({
+          chain,
+          mode: "preseed",
+          probe: true,
+        });
+      } else if (walletMode && customWallet !== null && customWallet.derived !== null) {
         await startCrack({
           chain,
           mode,
@@ -263,9 +277,11 @@ export default function App() {
     totalCandidates === null ? null : etaSeconds(totalCandidates, 0, estimatedRate);
 
   const canStart =
-    !running && systemError === null && (walletMode
-      ? customWallet !== null && customWallet.derived !== null
-      : verdict?.valid === true && address.trim() !== "");
+    !running && systemError === null && (preseedMode
+      ? chain === "bitcoin"
+      : walletMode
+        ? customWallet !== null && customWallet.derived !== null
+        : verdict?.valid === true && address.trim() !== "");
 
   const aggregate = report?.aggregate ?? null;
 
@@ -279,6 +295,9 @@ export default function App() {
         disabled={running}
       />
       <main>
+        {/* Pre-seed mode is targetless — the corpus/own-wallet toggle is
+            meaningless there and would imply a target exists. */}
+        {!preseedMode && (
         <div className="mode-switch" role="radiogroup" aria-label="Target source">
           <button
             type="button"
@@ -297,8 +316,11 @@ export default function App() {
             Your own wallet
           </button>
         </div>
+        )}
         <div className="config-grid">
-          {walletMode ? (
+          {preseedMode ? (
+            <PreSeedPanel chain={chain} disabled={running} />
+          ) : walletMode ? (
             <CustomWalletPanel
               chain={chain}
               onChain={setChain}
@@ -365,13 +387,15 @@ export default function App() {
         )}
         <div className="start-row">
           <button type="button" className="btn primary" onClick={start} disabled={!canStart}>
-            {mode === "quantum"
-              ? walletMode
-                ? "Run lottery on MY wallet"
-                : "Start full-space lottery"
-              : walletMode
-                ? "Search for MY wallet"
-                : "Start search"}
+            {preseedMode
+              ? "Start pre-seed lottery"
+              : mode === "quantum"
+                ? walletMode
+                  ? "Run lottery on MY wallet"
+                  : "Start full-space lottery"
+                : walletMode
+                  ? "Search for MY wallet"
+                  : "Start search"}
           </button>
           {running && (
             <button type="button" className="btn danger" onClick={cancel}>
@@ -395,12 +419,14 @@ export default function App() {
               fraction={lotteryRun ? 0 : (aggregate?.fractionOfKeyspace ?? 0)}
               eta={lotteryRun ? null : (aggregate?.etaSeconds ?? null)}
               measured={aggregate !== null}
+              rateUnit={report.mode === "preseed" ? "draws" : "derivations"}
             />
             <LaneGrid lanes={report.lanes} />
             <Ticker
               phrases={tickerPhrases}
               matched={report.status === "matched"}
               pinned={pinnedEntry}
+              variant={report.mode === "preseed" ? "pubkey" : "phrase"}
             />
           </>
         )}

@@ -1,4 +1,4 @@
-import type { MatchInfo, RunStatus, ServerMessage } from "./types";
+import type { AnyMatchInfo, RunStatus, ServerMessage } from "./types";
 
 /**
  * UI state folded from the WS event stream (pure — unit-testable). A `match`
@@ -7,7 +7,7 @@ import type { MatchInfo, RunStatus, ServerMessage } from "./types";
  */
 export interface RunUiState {
   report: RunReportView | null;
-  match: { runId: string; match: MatchInfo; workerId: number } | null;
+  match: { runId: string; match: AnyMatchInfo; workerId: number } | null;
   /** Last terminal `done` event (status + runId). */
   lastDone: { runId: string; status: RunStatus } | null;
   socketError: string | null;

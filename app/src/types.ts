@@ -6,7 +6,7 @@
  */
 
 export type Chain = "bitcoin" | "ethereum";
-export type Mode = "classic" | "quantum";
+export type Mode = "classic" | "quantum" | "preseed";
 
 export interface LaneRange {
   /** First prefix ordinal of this lane (inclusive). */
@@ -33,15 +33,13 @@ export interface LaneState {
 }
 
 /**
- * Provenance of an address-only run: the user typed ANY valid address with
- * no seed involved, consented to the disclosed odds, and the run is a
- * bounded full-space lottery over ALL checksum-valid 12-word BIP-39 phrases
- * — never a search of the declared address's real space (nobody can do
- * that). Mirrors api/src/types.ts.
+ * Provenance of a targetless run: the pre-seed P2PK lottery samples raw
+ * secp256k1 private keys against the Satoshi-era watchlist — there is NO
+ * user-supplied target. Mirrors api/src/types.ts.
  */
 export interface ProbeProvenance {
-  targetSource: "addressOnly";
-  searchedSpace: "all-checksum-valid-12-word-bip39-phrases";
+  targetSource: "addressOnly" | "preseed";
+  searchedSpace: "all-checksum-valid-12-word-bip39-phrases" | "secp256k1-scalar-space";
   /** A lottery has no finishable space — always null (counts would lie). */
   searchedRawCandidates: number | null;
   searchedChecksumValid: number | null;
@@ -88,6 +86,43 @@ export interface CustomWalletProvenance {
    * BIP-39 list). Mirrors api/src/types.ts.
    */
   limitedKeyspace: LimitedKeyspace | null;
+}
+
+/**
+ * A pre-seed watchlist hit: the run stopped on a public key that is already
+ * on the chain — a DISCOVERY, never a user-target match (there is no user
+ * target in this mode). All key material is shown verbatim. Mirrors
+ * api/src/types.ts.
+ */
+export interface PreSeedDiscoveryInfo {
+  /** The found scalar, 32-byte big-endian hex. */
+  privateKeyHex: string;
+  /** Wallet-import format for the same scalar. */
+  wif: string;
+  /** 33-byte compressed and 65-byte uncompressed encodings of k·G. */
+  pubkeyCompressedHex: string;
+  pubkeyUncompressedHex: string;
+  /** The watchlist entry that matched, exactly as stored (uncompressed). */
+  matchedWatchlistKey: string;
+  /** Legacy P2PKH addresses for both pubkey encodings. */
+  p2pkhCompressed: string;
+  p2pkhUncompressed: string;
+  /** True when the derived address is ALSO on the rich-address watchlist. */
+  richWatchlistHit: boolean;
+}
+
+export type AnyMatchInfo = MatchInfo | PreSeedDiscoveryInfo;
+
+/** A payload is a pre-seed discovery when it carries the key material. */
+export function isPreseedMatch(
+  match: AnyMatchInfo | null | undefined,
+): match is PreSeedDiscoveryInfo {
+  return (
+    match !== null &&
+    match !== undefined &&
+    "privateKeyHex" in match &&
+    "matchedWatchlistKey" in match
+  );
 }
 
 /**
@@ -138,11 +173,13 @@ export interface RunReport {
   finishedAt: string | null;
   elapsedMs: number | null;
   aggregate: Aggregate | null;
-  match: MatchInfo | null;
+  match: AnyMatchInfo | null;
   /** Set when the run's target was derived from a user-supplied seed phrase. */
   customWallet?: CustomWalletProvenance | null;
   /** Set when the run is a consented address-only full-space lottery. */
   probe?: ProbeProvenance | null;
+  /** Pre-seed runs: the discovery payload is repeated here verbatim. */
+  preseedDiscovery?: PreSeedDiscoveryInfo | null;
   /**
    * How the run traverses its space: bounded = shuffled exhaustive coverage
    * (finishable, ETA disclosed), lottery = uniform random sampling of the
@@ -155,7 +192,7 @@ export interface RunReport {
 /** WS messages the API broadcasts (GET /ws). */
 export type ServerMessage =
   | { type: "snapshot"; report: RunReport }
-  | { type: "match"; runId: string; match: MatchInfo; workerId: number }
+  | { type: "match"; runId: string; match: AnyMatchInfo; workerId: number }
   | { type: "done"; runId: string; status: RunStatus; report: RunReport }
   | { type: "error"; runId: string | null; message: string }
   /**
@@ -285,7 +322,24 @@ export interface LotteryStart {
   poolMembershipNote?: string;
 }
 
-export type CrackStart = ClassicStart | QuantumStart | LotteryStart;
+export type CrackStart = ClassicStart | QuantumStart | LotteryStart | PreSeedStart;
+
+/**
+ * Pre-seed mode start: a consented, budget-bounded raw-scalar lottery over
+ * the secp256k1 space — no user target exists. The note repeats the odds
+ * disclosure verbatim; the watchlist facts pin what was searched against.
+ */
+export interface PreSeedStart {
+  runId: string;
+  mode: "preseed";
+  searchKind: "lottery";
+  drawBudget: number;
+  seed: number;
+  totalCandidates: number;
+  note: string;
+  probe: ProbeProvenance;
+  targetNote: string;
+}
 
 // ── POST /derive ────────────────────────────────────────────────────────────
 

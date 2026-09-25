@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +8,7 @@ import WebSocket from "ws";
 import type { WebSocket as WebSocketType } from "ws";
 import { buildApp, type BuildAppOptions } from "../src/server.js";
 import type { FastifyInstance } from "fastify";
-import type { ServerMessage } from "../src/types.js";
+import { isPreseedMatch, type ServerMessage } from "../src/types.js";
 
 const fakeCli = fileURLToPath(
   new URL("./fixtures/fake-cli.js", import.meta.url),
@@ -1234,4 +1235,253 @@ describe("cancel across run states", () => {
       await app.close();
     }
   });
+});
+
+
+describe("pre-seed P2PK lottery mode", () => {
+  // The vendored Satoshi-era asset: canonical bytes (no trailing newline),
+  // 102,813 keys — the API pins its SHA-256 and count at request time.
+  const ASSET_FIRST_LINE = readFileSync(
+    fileURLToPath(new URL("../assets/p2pk-watchlist.txt", import.meta.url)),
+    "utf8",
+  ).split("\n")[0];
+
+  it("refuses pre-seed runs without the probe consent flag", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: { chain: "bitcoin", mode: "preseed" },
+      });
+      expect(res.statusCode).toBe(422);
+      const error = res.json().error as string;
+      // The refusal discloses the space, the target count, and the consent
+      // mechanism — the same pattern as the address-only lottery gate.
+      expect(error).toContain('Resend with "probe": true');
+      expect(error).toContain("2^256 ≈ 1.16×10^77");
+      expect(error).toContain("102,813");
+      expect(error).toContain("21,953");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("is Bitcoin-only, targetless, and lane-free (contract errors on 422)", async () => {
+    const { app } = await makeApp();
+    try {
+      const wrongChain = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: { chain: "ethereum", mode: "preseed", probe: true },
+      });
+      expect(wrongChain.statusCode).toBe(422);
+      expect(wrongChain.json().error).toContain("Bitcoin-only");
+
+      const withAddress = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "preseed",
+          probe: true,
+          address: POOLED_BTC,
+        },
+      });
+      expect(withAddress.statusCode).toBe(422);
+      expect(withAddress.json().error).toContain("no user-supplied target");
+
+      const withWallet = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "preseed",
+          probe: true,
+          customWallet: { mnemonic: OWN_PHRASE },
+        },
+      });
+      expect(withWallet.statusCode).toBe(422);
+      expect(withWallet.json().error).toContain("no user-supplied target");
+
+      const withWorkers = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: { chain: "bitcoin", mode: "preseed", probe: true, workers: 4 },
+      });
+      expect(withWorkers.statusCode).toBe(422);
+      expect(withWorkers.json().error).toContain("no lanes");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("starts a consented pre-seed run with the measured-odds disclosure (201)", async () => {
+    const { app } = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "preseed",
+          probe: true,
+          drawBudget: 5000,
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      const body = res.json();
+      expect(body.mode).toBe("preseed");
+      expect(body.searchKind).toBe("lottery");
+      expect(body.drawBudget).toBe(5000);
+      // A lottery's candidate count is its budget cap — no coverage claim.
+      expect(body.totalCandidates).toBe(5000);
+      // Provenance: the targetless pre-seed consent, stamped on the response.
+      expect(body.probe.targetSource).toBe("preseed");
+      expect(body.probe.searchedSpace).toBe("all-secp256k1-private-keys");
+      // The disclosure note: honest space, targets, measured rate, comparison.
+      const note = body.note as string;
+      expect(note).toContain("2^256 ≈ 1.16×10^77");
+      expect(note).toContain("102,813");
+      expect(note).toContain("21,953");
+      expect(note).toContain("110,000 draws/s");
+      // The honest side-by-side with the phrase lottery (computed, tested).
+      expect(note).toMatch(/10\^\d+ times more remote per hour/);
+      // The labeling boundary: discoveries, never recoveries.
+      expect(note).toContain("a discovery, never a recovery");
+      // The budget-end honesty line.
+      expect(note).toContain("never claims exhaustive coverage");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("spends its budget honestly when nothing is found", async () => {
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "preseed",
+          probe: true,
+          drawBudget: 5000,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId } = started.json();
+
+      const doneMsg = await nextMatching((m) => m.type === "done");
+      if (doneMsg.type !== "done") throw new Error("unreachable");
+      // Budget end — never an exhaustion claim.
+      expect(doneMsg.report.status).toBe("budget-reached");
+      expect(doneMsg.report.mode).toBe("preseed");
+      expect(doneMsg.report.chain).toBe("bitcoin");
+      expect(doneMsg.report.match).toBeNull();
+      expect(doneMsg.report.preseedDiscovery).toBeNull();
+      ws.close();
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("freezes a watchlist hit as a DISCOVERY with the full key material", async () => {
+    // FAKE_PRESEED_DISCOVERY=1: the fixture discovers its planted key at the
+    // last tick — the deterministic discovery-path proof end to end.
+    process.env.FAKE_PRESEED_DISCOVERY = "1";
+    const { app, port } = await makeApp({ watchlistPath: null });
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "preseed",
+          probe: true,
+          drawBudget: 5000,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId } = started.json();
+
+      const matchMsg = await nextMatching((m) => m.type === "match");
+      if (matchMsg.type !== "match") throw new Error("unreachable");
+      // The broadcast carries the transformed union — narrow on the payload.
+      if (!isPreseedMatch(matchMsg.match)) {
+        throw new Error("expected a pre-seed discovery payload");
+      }
+      const p = matchMsg.match;
+      expect(p.privateKeyHex).toMatch(/^[0-9a-f]{64}$/);
+      expect(p.wif.length).toBeGreaterThan(0);
+      expect(p.pubkeyCompressedHex).toMatch(/^0[23][0-9a-f]{64}$/);
+      expect(p.pubkeyUncompressedHex).toMatch(/^04[0-9a-f]{128}$/);
+      // The matched entry is the watchlist line the lane drew — the fixture
+      // echoes the first line of the asset it was handed.
+      expect(p.matchedWatchlistKey).toBe(ASSET_FIRST_LINE);
+      expect(p.addressP2pkhCompressed).toMatch(/^1[1-9A-HJ-NP-Za-km-z]{25,34}$/);
+      expect(p.addressP2pkhUncompressed).toMatch(/^1[1-9A-HJ-NP-Za-km-z]{25,34}$/);
+      expect(p.richWatchlistHit).toBe(false);
+
+      const doneMsg = await nextMatching((m) => m.type === "done");
+      if (doneMsg.type !== "done") throw new Error("unreachable");
+      expect(doneMsg.report.status).toBe("matched");
+      expect(isPreseedMatch(doneMsg.report.match)).toBe(true);
+      expect(doneMsg.report.preseedDiscovery).not.toBeNull();
+      expect(doneMsg.report.preseedDiscovery?.matchedWatchlistKey).toBe(
+        ASSET_FIRST_LINE,
+      );
+
+      // The persisted report keeps the frozen discovery too.
+      const report = await app.inject({ method: "GET", url: `/runs/${runId}` });
+      expect(report.statusCode).toBe(200);
+      expect(report.json().preseedDiscovery?.privateKeyHex).toMatch(
+        /^[0-9a-f]{64}$/,
+      );
+      ws.close();
+    } finally {
+      delete process.env.FAKE_PRESEED_DISCOVERY;
+      await app.close();
+    }
+  }, 20000);
+
+  it("upgrades the discovery label when the address is also rich-listed", async () => {
+    process.env.FAKE_PRESEED_DISCOVERY = "1";
+    // A rich watchlist containing the fixture's derived compressed address.
+    const dir = await mkdtemp(path.join(os.tmpdir(), "qcracker-rich-"));
+    const richPath = path.join(dir, "rich.txt");
+    await writeFile(richPath, "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH\n");
+    const { app, port } = await makeApp({ watchlistPath: richPath });
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "preseed",
+          probe: true,
+          drawBudget: 5000,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+
+      const matchMsg = await nextMatching((m) => m.type === "match");
+      if (matchMsg.type !== "match") throw new Error("unreachable");
+      if (!isPreseedMatch(matchMsg.match)) {
+        throw new Error("expected a pre-seed discovery payload");
+      }
+      // Same discovery, upgraded label: the address is ALSO on the rich list.
+      expect(matchMsg.match.richWatchlistHit).toBe(true);
+      ws.close();
+    } finally {
+      delete process.env.FAKE_PRESEED_DISCOVERY;
+      await app.close();
+    }
+  }, 20000);
 });

@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 use clap::{Parser, ValueEnum};
 use cracker_core::engine::{Match, SearchConfig, Searcher, Target};
 use cracker_core::pool::{PoolConfigJson, PoolSearch, WalletsFileJson};
+use cracker_core::preseed::{
+    P2pkWatchlist, PreSeedConfig, PreSeedDiscovery, PreSeedSearcher, PRODUCTION_EXPECTATION,
+};
 use cracker_core::sampler::{LotteryConfig, LotterySearcher};
 use cracker_core::validate::parse_target;
 use cracker_core::{CrackerError, PathKind};
@@ -63,6 +66,16 @@ impl AddressTypeArg {
     }
 }
 
+/// Integrity expectation applied to the pre-seed watchlist at load.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
+enum PreseedExpectationArg {
+    /// The vendored asset's pinned SHA-256 and unique-key count (production).
+    Asset,
+    /// Pins relaxed for deterministic tests; curve validation and dedupe
+    /// still apply. Never used by the API.
+    Fixture,
+}
+
 #[derive(Parser)]
 #[command(
     name = "cracker-cli",
@@ -103,6 +116,30 @@ struct Args {
     /// --start/--count/--pool-json.
     #[arg(long)]
     random_draws: Option<u64>,
+
+    /// Pre-seed lottery: draw this many random scalars uniformly in [1, n)
+    /// (the secp256k1 group order, 2^256 ≈ 1.16×10^77), derive each public
+    /// key, and test membership in the Satoshi-era P2PK watchlist. Bitcoin
+    /// only, no user target: a watchlist hit is a labeled discovery that
+    /// freezes the run. Cannot be combined with --target, --random-draws,
+    /// --start, --count or --pool-json.
+    #[arg(long)]
+    preseed_draws: Option<u64>,
+
+    /// P2PK watchlist for --preseed-draws: one 65-byte uncompressed hex
+    /// public key per line. Loaded with the compiled-in integrity pins
+    /// (SHA-256 + unique-key count) and curve-validated key by key; any
+    /// mismatch fails the run LOUDLY before a single draw — a corrupted
+    /// entry would silently skip recoverable keys.
+    #[arg(long)]
+    preseed_watchlist: Option<String>,
+
+    /// Integrity expectation for --preseed-watchlist: `asset` (default)
+    /// enforces the vendored asset's pinned SHA-256 and key count; `fixture`
+    /// relaxes the pins for deterministic tests (curve validation and dedupe
+    /// still apply).
+    #[arg(long, value_enum, default_value_t = PreseedExpectationArg::Asset)]
+    preseed_expectation: PreseedExpectationArg,
 
     /// Randomness seed: the shuffle order for bounded sweeps, the draw
     /// stream for the lottery. Lanes of one run must share it. Default:
@@ -216,7 +253,33 @@ fn main() {
         }
         return;
     }
-    if args.targets.is_empty() {
+    if args.preseed_draws.is_some() {
+        // Pre-seed lottery: Bitcoin-only, targetless — the argument set must
+        // reflect that before anything runs.
+        if !args.targets.is_empty()
+            || args.random_draws.is_some()
+            || args.start.is_some()
+            || args.count.is_some()
+            || args.pool_json.is_some()
+        {
+            eprintln!(
+                "error: --preseed-draws runs the targetless pre-seed lottery and cannot be \
+                 combined with --target, --random-draws, --start, --count or --pool-json"
+            );
+            std::process::exit(2);
+        }
+        // Same consent discipline as the address-only lottery: no unlabeled
+        // run exists — --probe is the permission and the disclosure label.
+        if !args.probe {
+            eprintln!(
+                "error: pre-seed lottery runs are consent-gated: rerun with --probe to accept \
+                 the disclosed odds (uniform random scalars over [1, n) — 2^256 ≈ 1.16×10^77 \
+                 keys — tested against the watchlisted public keys)"
+            );
+            std::process::exit(2);
+        }
+    }
+    if args.targets.is_empty() && args.preseed_draws.is_none() {
         eprintln!("error: --target <TARGETS> is required for a search");
         std::process::exit(2);
     }
@@ -239,7 +302,9 @@ fn main() {
 }
 
 fn run(args: &Args) -> cracker_core::Result<bool> {
-    if args.random_draws.is_some() {
+    if args.preseed_draws.is_some() {
+        run_preseed(args)
+    } else if args.random_draws.is_some() {
         run_lottery(args)
     } else {
         run_pool(args)
@@ -998,4 +1063,198 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
     }
 
     Ok(!all_matches.is_empty())
+}
+
+/// The pre-seed match event: a DISCOVERY, always — there is no user target in
+/// this mode, so the full frozen key material rides in `match.preseed`.
+fn preseed_match_event(d: &PreSeedDiscovery, probe: bool) -> serde_json::Value {
+    serde_json::json!({
+        "event": "match",
+        "mode": "preseed",
+        "probe": probe,
+        "discovery": true,
+        "match": { "preseed": d },
+    })
+}
+
+/// Pre-seed P2PK lottery: uniform random draws over [1, n), each derived
+/// public key membership-tested against the Satoshi-era watchlist. Exit 0 on
+/// a discovery, 1 when the draw budget is spent without one; the `done`
+/// event's `mode: "preseed"` tells it apart from the phrase lottery.
+fn run_preseed(args: &Args) -> cracker_core::Result<bool> {
+    let probe = args.probe;
+    let budget = args
+        .preseed_draws
+        .expect("dispatcher checked --preseed-draws");
+    let watchlist_path = args.preseed_watchlist.as_ref().ok_or_else(|| {
+        CrackerError::Other(
+            "--preseed-draws requires --preseed-watchlist <p2pk-keys-file>".to_string(),
+        )
+    })?;
+    let raw = std::fs::read(watchlist_path)
+        .map_err(|e| CrackerError::Other(format!("--preseed-watchlist {watchlist_path}: {e}")))?;
+    let expectation = match args.preseed_expectation {
+        PreseedExpectationArg::Asset => PRODUCTION_EXPECTATION,
+        PreseedExpectationArg::Fixture => cracker_core::preseed::WatchlistExpectation {
+            sha256_hex: None,
+            unique_count: None,
+        },
+    };
+    // Integrity gates first: pinned hash, per-key curve validation, dedupe,
+    // unique-count pin. Any mismatch fails the run before a single draw —
+    // watchlist integrity is load-bearing (a corrupted entry would silently
+    // skip recoverable keys).
+    let watchlist = P2pkWatchlist::load_bytes(&raw, &expectation)
+        .map_err(|e| CrackerError::Other(format!("--preseed-watchlist {watchlist_path}: {e}")))?;
+
+    // The rich-address watchlist doubles as the discovery label upgrade:
+    // a discovered key whose derived P2PKH address is listed there is noted
+    // in the payload. Same strict parsing and corpus union as the other
+    // discovery surfaces.
+    let rich_addresses = discovery_watchlist(args)?
+        .into_iter()
+        .map(|t| t.bytes)
+        .collect::<std::collections::HashSet<_>>();
+
+    if let Some(n) = args.workers {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()
+            .map_err(|e| CrackerError::Other(e.to_string()))?;
+    }
+
+    let seed = run_seed(args);
+    let searcher = Arc::new(PreSeedSearcher::new(
+        PreSeedConfig {
+            watchlist,
+            rich_addresses,
+        },
+        !args.exhaustive,
+    ));
+    {
+        let mut out = std::io::stdout().lock();
+        let start_event = serde_json::json!({
+            "event": "start",
+            "mode": "preseed",
+            "probe": probe,
+            "draw_budget": budget,
+            "seed": seed,
+            "workers": args.workers,
+            "watchlist_keys": searcher.config.watchlist.len(),
+            "expectation": match args.preseed_expectation {
+                PreseedExpectationArg::Asset => "asset",
+                PreseedExpectationArg::Fixture => "fixture",
+            },
+        });
+        writeln!(out, "{start_event}")?;
+        out.flush()?;
+    }
+
+    // Ticker thread: same contract as the lottery ticker, pubkey feed —
+    // sampled derived pubkeys are what this mode "tries" live.
+    let done = Arc::new(AtomicBool::new(false));
+    let ticker = {
+        let searcher = Arc::clone(&searcher);
+        let done = Arc::clone(&done);
+        let interval = Duration::from_millis(args.progress_ms);
+        let mut last_draws = 0u64;
+        let mut last_tick = Instant::now();
+        std::thread::spawn(move || {
+            let mut drained: Vec<PreSeedDiscovery> = Vec::new();
+            while !done.load(Ordering::Relaxed) {
+                std::thread::sleep(interval);
+                let newly = searcher.take_matches();
+                let draws = searcher.progress.draws.load(Ordering::Relaxed);
+                let dt = last_tick.elapsed().as_secs_f64();
+                let rate = if dt > 0.0 {
+                    (draws - last_draws) as f64 / dt
+                } else {
+                    0.0
+                };
+                last_draws = draws;
+                last_tick = Instant::now();
+                let mut ok = true;
+                {
+                    let mut out = std::io::stdout().lock();
+                    for d in &newly {
+                        if writeln!(out, "{}", preseed_match_event(d, probe)).is_err() {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        let frontier_pubkey = searcher
+                            .progress
+                            .last_pubkey
+                            .lock()
+                            .expect("last_pubkey mutex poisoned")
+                            .clone();
+                        // `fraction_of_space` is consumed draw budget — no
+                        // space-fraction claim exists in this mode.
+                        let line = serde_json::json!({
+                            "event": "progress",
+                            "mode": "preseed",
+                            "probe": probe,
+                            "draws_done": draws,
+                            "draws_per_sec": rate,
+                            "fraction_of_space": if budget > 0 {
+                                draws as f64 / budget as f64
+                            } else {
+                                0.0
+                            },
+                            "matches": searcher.matches_found(),
+                            "frontier_pubkey": frontier_pubkey,
+                        });
+                        if writeln!(out, "{line}").is_err() || out.flush().is_err() {
+                            ok = false;
+                        }
+                    }
+                }
+                drained.extend(newly);
+                if !ok {
+                    return drained; // stdout closed; tally kept for the exit code
+                }
+            }
+            drained
+        })
+    };
+
+    let scan_started = Instant::now();
+    let run_discoveries = searcher.run(budget, seed);
+    let elapsed = scan_started.elapsed();
+    done.store(true, Ordering::Relaxed);
+    let ticker_discoveries = ticker.join().unwrap_or_default();
+    let final_discoveries = searcher.take_matches();
+
+    let all = run_discoveries
+        .into_iter()
+        .chain(ticker_discoveries)
+        .chain(final_discoveries)
+        .collect::<Vec<_>>();
+    let total_secs = elapsed.as_secs_f64();
+    {
+        let mut out = std::io::stdout().lock();
+        for d in &all {
+            writeln!(out, "{}", preseed_match_event(d, probe))?;
+        }
+        let draws = searcher.progress.draws.load(Ordering::Relaxed);
+        let done_event = serde_json::json!({
+            "event": "done",
+            "mode": "preseed",
+            "probe": probe,
+            "draws_done": draws,
+            "elapsed_ms": elapsed.as_millis() as u64,
+            "draws_per_sec": if total_secs > 0.0 {
+                draws as f64 / total_secs
+            } else {
+                0.0
+            },
+            "matches": all.len(),
+            "discovered": all.first().map(serde_json::to_value).transpose()?,
+        });
+        writeln!(out, "{done_event}")?;
+        out.flush()?;
+    }
+
+    Ok(!all.is_empty())
 }

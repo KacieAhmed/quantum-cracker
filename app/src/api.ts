@@ -103,7 +103,7 @@ export function cancelFailureMessage(err: unknown): string {
 
 /** Chain/mode values the toggles show, in order. */
 export const CHAINS: readonly Chain[] = ["bitcoin", "ethereum"] as const;
-export const MODES: readonly Mode[] = ["classic", "quantum"] as const;
+export const MODES: readonly Mode[] = ["classic", "quantum", "preseed"] as const;
 
 /** WebSocket endpoint for the live run feed (same-origin; proxied in dev). */
 export function wsUrl(): string {

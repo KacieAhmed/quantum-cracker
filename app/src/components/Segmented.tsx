@@ -21,6 +21,7 @@ export function Segmented<T extends string>({
     ethereum: "Ethereum",
     classic: "Classic",
     quantum: "Quantum",
+    preseed: "Pre-seed",
   } as Record<T, string>;
   return (
     <div className="segmented" role="group" aria-label={ariaLabel}>

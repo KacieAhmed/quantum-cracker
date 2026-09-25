@@ -1,6 +1,7 @@
 import { formatCount, formatDuration, formatRate } from "../format";
 import type { RunUiState } from "../reducer";
-import type { Chain, MatchInfo, RunReport } from "../types";
+import type { Chain, MatchInfo, PreSeedDiscoveryInfo, RunReport } from "../types";
+import { isPreseedMatch } from "../types";
 import { Infeasibility } from "./Infeasibility";
 
 interface ResultPanelProps {
@@ -169,6 +170,98 @@ function MatchCard({
   );
 }
 
+/**
+ * Pre-seed discovery: the run stopped on a private key whose public key is on
+ * the bundled Satoshi-era watchlist. There is NO user target — this is a
+ * discovery of already-public chain data, never a recovery. The full key
+ * material is frozen and shown so the derivation can be verified externally.
+ */
+function PreSeedDiscoveryCard({ discovery }: { discovery: PreSeedDiscoveryInfo }) {
+  return (
+    <section className="card result matched" aria-label="Discovery — watchlisted key found">
+      {/* Freeze UX: the engine stopped drawing the moment the derived pubkey
+          hit the watchlist — the run is frozen and the key material below is
+          the one thing to read. Same treatment as a seed-phrase match. */}
+      <div className="match-banner" role="status">
+        <h2>❄ Run frozen — stopped on a watchlist discovery</h2>
+        <span className="match-sub">
+          engine stopped drawing · live feed quiet · key material and proof below
+        </span>
+      </div>
+      <div className="card-title-row">
+        <h2>◉ Discovery — a Satoshi-era watchlisted key, NOT a user target</h2>
+        <span className="level-badge amber">discovery — not a recovery</span>
+      </div>
+      <p className="note">
+        This randomly drawn private key genuinely derives a public key on the
+        run's Satoshi-era P2PK watchlist, so the run stopped to show it. That
+        key was already public on the chain — it appears in a 2009–2010
+        pay-to-public-key output — and no address was ever "recovered": the
+        pre-seed lottery has no user target at all.
+      </p>
+      <div className="proof-grid">
+        <div className="proof-cell recovered">
+          <span className="proof-label">discovered private key (64-hex)</span>
+          <span className="kv-value mono match-phrase">{discovery.privateKeyHex}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">same key, wallet-import format (WIF)</span>
+          <span className="kv-value mono">{discovery.wif}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">derived public key (compressed, 33-byte)</span>
+          <span className="kv-value mono">{discovery.pubkeyCompressedHex}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">derived public key (uncompressed, 65-byte)</span>
+          <span className="kv-value mono">{discovery.pubkeyUncompressedHex}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">matched watchlist entry</span>
+          <span className="kv-value mono">{discovery.matchedWatchlistKey}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">legacy P2PKH address (from compressed key)</span>
+          <span className="kv-value mono">{discovery.p2pkhCompressed}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">legacy P2PKH address (from uncompressed key)</span>
+          <span className="kv-value mono">{discovery.p2pkhUncompressed}</span>
+        </div>
+      </div>
+      {discovery.richWatchlistHit && (
+        <p className="verdict ok proof-verdict">
+          ✦ Upgraded label: the derived address is ALSO on the rich-address
+          watchlist — this discovery is one of the well-funded era addresses.
+        </p>
+      )}
+      <p className="verdict ok proof-verdict">
+        ✓ PROVEN: the private key shown above derives the public key that
+        equals the matched watchlist entry — scalar multiplication and the
+        membership check are the whole proof, not a heuristic.
+      </p>
+      <div className="verify-recipe">
+        <h3>Verify externally (recommended)</h3>
+        <ol>
+          <li>
+            Import the WIF (or paste the 64-hex private key) above into any
+            standard open-source key-to-address tool (e.g. the well-known
+            iancoleman.io toolchain, run offline).
+          </li>
+          <li>
+            Confirm the tool's public key equals the compressed and
+            uncompressed forms shown, and the legacy P2PKH addresses match.
+          </li>
+          <li>
+            Confirm the matched watchlist entry equals the uncompressed public
+            key — that equality is why the run stopped.
+          </li>
+        </ol>
+      </div>
+      <Infeasibility />
+    </section>
+  );}
+
 function ExhaustedCard({ report }: { report: RunReport }) {
   const agg = report.aggregate;
   return (
@@ -222,22 +315,43 @@ function CancelledCard({ report }: { report: RunReport }) {
 
 function BudgetReachedCard({ report }: { report: RunReport }) {
   const agg = report.aggregate;
+  const preseed = report.mode === "preseed";
   return (
     <section className="card result exhausted" aria-label="Draw budget reached">
       <h2>No match — the draw budget is spent</h2>
-      <p>
-        The lottery made {formatCount(agg?.derived ?? report.totalCandidates)} random draws at{" "}
-        <strong>{agg === null ? "—" : formatRate(agg.derivedPerSec)}</strong> and stopped at its
-        disclosed budget. None of them derived the target address.
-      </p>
-      <p>
-        This is not an exhausted search: the space of checksum-valid 12-word
-        phrases is 2^128 ≈ 3.4×10^38, so a budget-sized lottery cannot cover it —
-        the run never claimed exhaustive coverage, before or after. At{" "}
-        {agg === null ? "this" : formatRate(agg.derivedPerSec)}, sweeping 2^128 phrases would take
-        far longer than the age of the universe, and Grover's quadratic speedup would still need
-        (π/4)·2^66 ≈ 5.8×10^19 oracle calls.
-      </p>
+      {preseed ? (
+        <p>
+          The lottery made {formatCount(agg?.derived ?? report.totalCandidates)} random draws at{" "}
+          <strong>{agg === null ? "—" : formatRate(agg.derivedPerSec)}</strong> and stopped at its
+          disclosed budget. None of them derived a key on the Satoshi-era watchlist.
+        </p>
+      ) : (
+        <p>
+          The lottery made {formatCount(agg?.derived ?? report.totalCandidates)} random draws at{" "}
+          <strong>{agg === null ? "—" : formatRate(agg.derivedPerSec)}</strong> and stopped at its
+          disclosed budget. None of them derived the target address.
+        </p>
+      )}
+      {preseed ? (
+        <p>
+          This is not an exhausted search: the space of secp256k1 private keys is
+          2^256 ≈ 1.16×10^77, so a budget-sized lottery cannot cover it — the run
+          never claimed exhaustive coverage, before or after. At{" "}
+          {agg === null ? "this" : formatRate(agg.derivedPerSec)}, sweeping the full scalar space
+          would take far longer than the age of the universe, and Grover's quadratic speedup
+          would still leave an unimplementable number of oracle calls on a huge reversible
+          circuit.
+        </p>
+      ) : (
+        <p>
+          This is not an exhausted search: the space of checksum-valid 12-word
+          phrases is 2^128 ≈ 3.4×10^38, so a budget-sized lottery cannot cover it —
+          the run never claimed exhaustive coverage, before or after. At{" "}
+          {agg === null ? "this" : formatRate(agg.derivedPerSec)}, sweeping 2^128 phrases would take
+          far longer than the age of the universe, and Grover's quadratic speedup would still need
+          (π/4)·2^66 ≈ 5.8×10^19 oracle calls.
+        </p>
+      )}
       <Infeasibility />
     </section>
   );
@@ -262,7 +376,13 @@ export function ResultPanel({ ui, chain }: ResultPanelProps) {
 
   switch (report.status) {
     case "matched":
-      return report.match !== null ? (
+      if (report.match === null) return null;
+      // Pre-seed payloads are a DIFFERENT match shape — a targetless
+      // discovery with key material, never a seed-phrase match card.
+      if (isPreseedMatch(report.match)) {
+        return <PreSeedDiscoveryCard discovery={report.match} />;
+      }
+      return (
         <MatchCard
           match={report.match}
           workerId={ui.match?.workerId ?? null}
@@ -270,7 +390,7 @@ export function ResultPanel({ ui, chain }: ResultPanelProps) {
           chain={chain}
           customWallet={report.customWallet ?? null}
         />
-      ) : null;
+      );
     case "exhausted":
       return <ExhaustedCard report={report} />;
     case "budget-reached":

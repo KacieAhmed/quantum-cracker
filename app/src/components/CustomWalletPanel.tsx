@@ -1,12 +1,40 @@
 import { useState } from "react";
-import { ApiError, deriveAddresses } from "../api";
+import { ApiError, CHAINS, deriveAddresses } from "../api";
 import type { Chain, DeriveResponse } from "../types";
+import { Segmented } from "./Segmented";
 
 interface CustomWalletPanelProps {
   chain: Chain;
+  /** Shares App's single chain state with the header toggle — one source of truth. */
+  onChain: (chain: Chain) => void;
   disabled: boolean;
   /** Lifted so App can build the /crack request. */
   onDerived: (mnemonic: string, passphrase: string, expectedAddress: string, derived: DeriveResponse | null) => void;
+}
+
+/** One chain's row in the preview grid; the active chain is the run target. */
+function DeriveRow({
+  label,
+  isTarget,
+  address,
+  path,
+}: {
+  label: string;
+  isTarget: boolean;
+  address: string;
+  path: string;
+}) {
+  return (
+    <>
+      <span className="kv-key">
+        {label}
+        {isTarget ? " → target" : ""}
+      </span>
+      <span className="kv-value mono">{address}</span>
+      <span className="kv-key">derivation path</span>
+      <span className="kv-value mono">{path}</span>
+    </>
+  );
 }
 
 /**
@@ -18,6 +46,7 @@ interface CustomWalletPanelProps {
  */
 export function CustomWalletPanel({
   chain,
+  onChain,
   disabled,
   onDerived,
 }: CustomWalletPanelProps) {
@@ -48,19 +77,6 @@ export function CustomWalletPanel({
     }
   };
 
-  const derivedAddress =
-    derived === null
-      ? null
-      : chain === "ethereum"
-        ? derived.addresses.eth
-        : derived.addresses.btc_p2pkh;
-  const derivedPath =
-    derived === null
-      ? null
-      : chain === "ethereum"
-        ? derived.paths.eth
-        : derived.paths.btc_p2pkh;
-
   return (
     <section className="card custom-wallet" aria-label="Test with your own wallet">
       <h2>Test with your own wallet</h2>
@@ -71,6 +87,16 @@ export function CustomWalletPanel({
         so pasting it here exposes nothing. A freeform third-party address is
         never used as a target; a typed address only cross-checks.
       </p>
+      <div className="field">
+        <span className="field-label">Chain to search</span>
+        <Segmented
+          options={CHAINS}
+          value={chain}
+          onSelect={onChain}
+          disabled={disabled}
+          ariaLabel="Chain to search for"
+        />
+      </div>
       <label className="field">
         <span className="field-label">Your BIP-39 seed phrase</span>
         <textarea
@@ -119,13 +145,21 @@ export function CustomWalletPanel({
         </button>
       </div>
       {error !== null && <p className="verdict bad">{error}</p>}
-      {derived !== null && derivedAddress !== null && (
+      {derived !== null && (
         <div className="derive-preview">
           <div className="kv">
-            <span className="kv-key">derived {chain === "ethereum" ? "Ethereum" : "Bitcoin P2PKH"} address (the target)</span>
-            <span className="kv-value mono">{derivedAddress}</span>
-            <span className="kv-key">derivation path</span>
-            <span className="kv-value mono">{derivedPath}</span>
+            <DeriveRow
+              label="derived Ethereum address"
+              isTarget={chain === "ethereum"}
+              address={derived.addresses.eth}
+              path={derived.paths.eth}
+            />
+            <DeriveRow
+              label="derived Bitcoin P2PKH address"
+              isTarget={chain === "bitcoin"}
+              address={derived.addresses.btc_p2pkh}
+              path={derived.paths.btc_p2pkh}
+            />
           </div>
           {derived.poolMembership.inSpace ? (
             <p className="verdict ok">

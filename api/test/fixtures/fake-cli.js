@@ -102,6 +102,78 @@ if (args.includes("--derive-mnemonic")) {
   process.exit(0);
 }
 
+// --derive-privkey: canned mirror of the raw-key proof. The fixture-verse
+// key is k=1 (same key material the preseed discovery payload uses), so
+// every value below matches the fixture's frozen discovery numbers.
+const K1_WIF_C = "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn";
+const K1_WIF_U = "5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf";
+const K1_HEX = "0000000000000000000000000000000000000000000000000000000000000001";
+const K1_PROOF = {
+  input_form: null,
+  input_wif: null,
+  wif_compressed: K1_WIF_C,
+  wif_uncompressed: K1_WIF_U,
+  private_key_hex: K1_HEX,
+  pubkey_compressed_hex:
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+  pubkey_uncompressed_hex:
+    "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+  address_p2pkh_compressed: "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+  address_p2pkh_uncompressed: "1EHNa6P4AAaDEoRCvJ4m1jWWtLxE5vCjyS",
+  address_eth: "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+  expected_address: null,
+  matched_path: null,
+};
+
+if (args.includes("--derive-privkey")) {
+  const key = (flag("derive-privkey", "") ?? "").trim();
+  const expected = flag("expect-address", null);
+  if (expected !== null && expected.trim() === "0xBAD") {
+    // The fixture's malformed-address marker (same one --validate-only rejects).
+    console.log(JSON.stringify({ error: "invalid expected address: malformed address" }));
+    process.exit(2);
+  }
+  const body = key.toLowerCase().replace(/^0x/, "");
+  if (/^[0-9a-f]+$/.test(body)) {
+    if (body.length !== 64) {
+      console.log(JSON.stringify({ error: `invalid private key: raw scalar must be exactly 64 hex characters (32 bytes, optional 0x prefix), found ${body.length} hex characters` }));
+      process.exit(2);
+    }
+    if (body === K1_HEX) {
+      K1_PROOF.input_form = "hex";
+    } else if (BigInt("0x" + body) === 0n) {
+      console.log(JSON.stringify({ error: "invalid private key: the zero scalar is not a usable secp256k1 key" }));
+      process.exit(2);
+    } else if (BigInt("0x" + body) >= BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141")) {
+      console.log(JSON.stringify({ error: "invalid private key: scalar is out of range \u2014 secp256k1 keys must lie in [1, n)" }));
+      process.exit(2);
+    } else {
+      // Any other in-range scalar is valid but has no fixture derivation:
+      // reject with the checksum-style canned error only for the WIF path.
+      K1_PROOF.input_form = "hex";
+    }
+  } else if (key === K1_WIF_C || key === K1_WIF_U) {
+    K1_PROOF.input_form = "wif";
+    K1_PROOF.input_wif = key;
+  } else {
+    console.log(JSON.stringify({ error: "invalid private key: WIF base-58 checksum mismatch \u2014 the string was mistyped or truncated" }));
+    process.exit(2);
+  }
+  if (expected !== null) {
+    K1_PROOF.expected_address = expected.trim();
+    const e = expected.trim().toLowerCase();
+    if (e === K1_PROOF.address_eth.toLowerCase()) {
+      K1_PROOF.matched_path = "eth";
+    } else if (e === K1_PROOF.address_p2pkh_compressed.toLowerCase()) {
+      K1_PROOF.matched_path = "btc-p2pkh-compressed";
+    } else if (e === K1_PROOF.address_p2pkh_uncompressed.toLowerCase()) {
+      K1_PROOF.matched_path = "btc-p2pkh-uncompressed";
+    }
+  }
+  console.log(JSON.stringify(K1_PROOF));
+  process.exit(0);
+}
+
 const SPACE = Number(process.env.FAKE_SPACE ?? 1000);
 const MATCH = (process.env.FAKE_MATCH ?? "1") === "1";
 const MATCH_ORDINAL = Number(process.env.FAKE_MATCH_ORDINAL ?? 700);

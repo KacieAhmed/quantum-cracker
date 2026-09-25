@@ -25,12 +25,15 @@ import {
 } from "./preseed.js";
 import {
   deriveMnemonic,
+  derivePrivKey,
   listTargets,
   listWordlist,
   validateAddresses,
   MnemonicError,
+  PrivateKeyError,
   type CorpusDoc,
   type MnemonicDerivation,
+  type RawKeyProofRaw,
   type TargetVerdict,
   type WordlistDoc,
 } from "./cli.js";
@@ -41,6 +44,7 @@ import type {
   LimitedKeyspace,
   Mode,
   ProbeProvenance,
+  RawKeyProofInfo,
   RunReport,
   ServerMessage,
 } from "./types.js";
@@ -71,14 +75,24 @@ export interface BuildAppOptions {
 }
 
 interface CustomWalletBody {
-  /** A BIP-39 mnemonic the user OWNS; its derived address becomes the target. */
-  mnemonic: string;
+  /**
+   * A BIP-39 mnemonic the user OWNS; its derived address becomes the target.
+   * Exactly one of mnemonic/privateKey must be supplied (clear 400 otherwise).
+   */
+  mnemonic?: string;
+  /**
+   * A raw private key the user OWNS (64-hex scalar, optional 0x prefix, or a
+   * mainnet WIF): the own-wallet proof for pre-BIP-39 wallets. The run is a
+   * one-shot derivation proof — no search, no consent gate, no budget.
+   * Exactly one of mnemonic/privateKey must be supplied (clear 400 otherwise).
+   */
+  privateKey?: string;
   /** Optional BIP-39 passphrase (default empty, the real-wallet default). */
   passphrase?: string;
   /**
-   * Optional cross-check: must equal the address the mnemonic derives.
-   * Never used as the search target — a freeform third-party address is
-   * never accepted.
+   * Optional cross-check: must equal the address the mnemonic (or raw key)
+   * derives. Never used as the search target — a freeform third-party
+   * address is never accepted.
    */
   expectedAddress?: string;
   /**
@@ -145,9 +159,11 @@ const crackBodySchema = {
     },
     customWallet: {
       type: "object",
-      required: ["mnemonic"],
+      // Exactly one of mnemonic/privateKey is enforced by the handler (a
+      // cross-field rule the JSON schema cannot express) with a clear 400.
       properties: {
         mnemonic: { type: "string", minLength: 1 },
+        privateKey: { type: "string", minLength: 1 },
         passphrase: { type: "string" },
         expectedAddress: { type: "string", minLength: 1 },
         varySlots: {
@@ -181,6 +197,39 @@ function derivedAddressForChain(
   return chain === "ethereum"
     ? derivation.addresses.eth
     : derivation.addresses.btc_p2pkh;
+}
+
+/** The address a proof's matchedPath names — the definitive derivation match. */
+function matchedAddressOf(proof: RawKeyProofInfo): string {
+  switch (proof.matchedPath) {
+    case "eth":
+      return proof.addressEth;
+    case "btc-p2pkh-compressed":
+      return proof.addressP2pkhCompressed;
+    case "btc-p2pkh-uncompressed":
+      return proof.addressP2pkhUncompressed;
+    default:
+      return "";
+  }
+}
+
+/**
+ * Up-front disclosure for a raw private-key proof run: what is computed,
+ * from what, and what a match (or an honest no-match) means. The teaching
+ * point is the same as everywhere else — the proof derives, it never
+ * searches, and nothing is stored.
+ */
+function rawKeyProofNote(proof: RawKeyProofInfo): string {
+  const base =
+    "Raw private-key proof: every value shown is computed from the key you entered by the same engine the search modes run per candidate — nothing is stored and nothing is searched. A raw key IS the leaf of the derivation tree (no seed phrase, no BIP-32 path applies), so the proof is instant and exact.";
+  const matched = matchedAddressOf(proof);
+  if (matched !== "") {
+    return `${base} Match: this key genuinely derives ${matched} — a definitive derivation proof, shown with every intermediate step (both WIF forms, both public-key encodings, and every derived address).`;
+  }
+  if (proof.expectedAddress !== null) {
+    return `${base} No match: this key is valid, but it derives none of the address you expected. The addresses shown ARE the ones this key controls — if your wallet displays a different address, the key you entered is not the key your wallet uses (check the WIF compression flag, or whether that address belongs to a different key).`;
+  }
+  return `${base} The proof shows every address this key derives; supply expectedAddress to have the run compare one against them.`;
 }
 
 /**
@@ -681,6 +730,24 @@ export async function buildApp(
         });
       }
 
+      // Own-wallet runs take exactly one key source: a seed phrase (mnemonic)
+      // or a raw private key — both, or neither, is a contract error. A 400
+      // (not a 422): the request shape itself is wrong before any engine call.
+      if (body.customWallet !== undefined) {
+        const hasMnemonic =
+          typeof body.customWallet.mnemonic === "string" &&
+          body.customWallet.mnemonic.trim().length > 0;
+        const hasKey =
+          typeof body.customWallet.privateKey === "string" &&
+          body.customWallet.privateKey.trim().length > 0;
+        if (hasMnemonic === hasKey) {
+          return reply.code(400).send({
+            error:
+              "own-wallet runs take exactly one key source: customWallet.mnemonic (seed phrase) or customWallet.privateKey (64-hex scalar or mainnet WIF) — supply exactly one",
+          });
+        }
+      }
+
       // The feasibility probe is address-only: no seed phrase is involved, so
       // it cannot be combined with the custom-wallet derivation flow.
       if (body.probe === true && body.customWallet !== undefined) {
@@ -708,11 +775,69 @@ export async function buildApp(
       let poolFileCleanup: (() => void) | null = null;
 
       if (body.customWallet !== undefined) {
+        // Raw private-key proof (pre-BIP-39 wallets): the one-shot derivation
+        // proof — no search, no consent gate, no budget. The engine computes
+        // the full chain from the key the user already holds; an expected
+        // address is validated by the engine (malformed fails decode) and
+        // compared by exact string equality. The run settles immediately.
+        if (body.customWallet.privateKey !== undefined) {
+          let proofRaw: RawKeyProofRaw;
+          try {
+            proofRaw = await derivePrivKey(
+              options.cliPath,
+              body.customWallet.privateKey,
+              body.customWallet.expectedAddress,
+            );
+          } catch (err) {
+            if (err instanceof PrivateKeyError) {
+              return reply.code(422).send({ error: err.message });
+            }
+            return reply
+              .code(503)
+              .send({ error: `engine unavailable: ${String(err)}` });
+          }
+          const proof: RawKeyProofInfo = {
+            inputForm: proofRaw.input_form,
+            inputWif: proofRaw.input_wif,
+            wifCompressed: proofRaw.wif_compressed,
+            wifUncompressed: proofRaw.wif_uncompressed,
+            privateKeyHex: proofRaw.private_key_hex,
+            pubkeyCompressedHex: proofRaw.pubkey_compressed_hex,
+            pubkeyUncompressedHex: proofRaw.pubkey_uncompressed_hex,
+            addressP2pkhCompressed: proofRaw.address_p2pkh_compressed,
+            addressP2pkhUncompressed: proofRaw.address_p2pkh_uncompressed,
+            addressEth: proofRaw.address_eth,
+            expectedAddress: proofRaw.expected_address,
+            matchedPath: proofRaw.matched_path,
+          };
+          const report = runManager.startRawKeyProof(
+            { runId, proof },
+            broadcast,
+          );
+          return reply.code(201).send({
+            runId: report.runId,
+            mode: "classic",
+            searchKind: "proof",
+            totalCandidates: 0,
+            rawKeyProof: proof,
+            note: rawKeyProofNote(proof),
+          });
+        }
+        // The proof branch above returned for key runs, so this is a phrase
+        // run: the exactly-one guard guarantees a defined mnemonic. This
+        // check just narrows the optional type for the compiler.
+        const mnemonic = body.customWallet.mnemonic;
+        if (mnemonic === undefined) {
+          return reply.code(400).send({
+            error:
+              "own-wallet runs take exactly one key source: customWallet.mnemonic (seed phrase) or customWallet.privateKey (64-hex scalar or mainnet WIF) — supply exactly one",
+          });
+        }
         let derivation: MnemonicDerivation;
         try {
           derivation = await deriveMnemonic(
             options.cliPath,
-            body.customWallet.mnemonic,
+            mnemonic,
             body.customWallet.passphrase ?? "",
           );
         } catch (err) {

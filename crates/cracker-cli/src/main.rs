@@ -210,6 +210,25 @@ struct Args {
     #[arg(long)]
     derive_mnemonic: Option<String>,
 
+    /// Derive every supported address directly from a raw private key — the
+    /// own-wallet proof for pre-BIP-39 wallets. Accepts a 64-hex scalar
+    /// (optional 0x prefix) or a mainnet WIF; derives Bitcoin legacy P2PKH
+    /// from BOTH the compressed and uncompressed public-key encodings plus
+    /// the EIP-55 Ethereum address, all from the scalar (no BIP-39/BIP-32
+    /// tree: a raw key IS the leaf). Prints one JSON object with the full
+    /// derivation chain; errors print {"error": ...} and exit 2. No search
+    /// is started and no consent gate applies: this proves what a key the
+    /// user already holds derives to.
+    #[arg(long)]
+    derive_privkey: Option<String>,
+
+    /// Expected address for --derive-privkey (optional): the proof reports a
+    /// definitive derivation match when the key derives it, and an honest
+    /// no-match naming every derived address otherwise. Malformed addresses
+    /// fail decode with a precise error (doc section 8.4).
+    #[arg(long)]
+    expect_address: Option<String>,
+
     /// Print the embedded demo-corpus targets as JSON and exit. `searchable`
     /// marks wallets inside the pooled search space; the four random corpus
     /// wallets are valid targets that a pooled-space search never matches.
@@ -245,6 +264,34 @@ fn main() {
     }
     if let Some(mnemonic) = &args.derive_mnemonic {
         match derive_mnemonic_json(&args, mnemonic) {
+            Ok(json) => println!("{json}"),
+            Err(err) => {
+                println!("{}", serde_json::json!({ "error": err.to_string() }));
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+    if let Some(key) = &args.derive_privkey {
+        // Standalone derivation proof: no search flags may ride along.
+        if !args.targets.is_empty()
+            || args.random_draws.is_some()
+            || args.preseed_draws.is_some()
+            || args.start.is_some()
+            || args.count.is_some()
+            || args.pool_json.is_some()
+            || args.derive_mnemonic.is_some()
+            || args.validate_only
+            || args.list_targets
+            || args.list_wordlist
+        {
+            eprintln!(
+                "error: --derive-privkey is a standalone derivation proof and cannot be \
+                 combined with search or other derivation flags"
+            );
+            std::process::exit(2);
+        }
+        match derive_privkey_json(&args, key) {
             Ok(json) => println!("{json}"),
             Err(err) => {
                 println!("{}", serde_json::json!({ "error": err.to_string() }));
@@ -463,6 +510,20 @@ fn derive_mnemonic_json(args: &Args, mnemonic: &str) -> cracker_core::Result<ser
             "raw_candidates": pool.raw_candidates(),
         },
     }))
+}
+
+/// One JSON object for `--derive-privkey`: the full raw-key derivation chain
+/// (input form, both canonical WIF renderings, the 64-hex scalar, both
+/// public-key encodings, and every supported address), plus the expected-
+/// address verdict when one was supplied — `matched_path` names the derived
+/// address the expectation equals, or null for an honest no-match. Uses the
+/// identical scalar/encoding primitives the search engine runs per candidate,
+/// so what a user sees here is exactly what a match would be compared against.
+fn derive_privkey_json(args: &Args, key: &str) -> cracker_core::Result<serde_json::Value> {
+    let parsed = cracker_core::parse_private_key(key)?;
+    let expected = args.expect_address.as_deref().map(str::trim);
+    let proof = cracker_core::raw_key_proof(&parsed, expected)?;
+    serde_json::to_value(proof).map_err(Into::into)
 }
 
 /// Validate each target against the engine's decode rules (malformed fails

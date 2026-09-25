@@ -56,7 +56,11 @@ describe("foldMessage", () => {
     });
     expect(state.match?.workerId).toBe(3);
     expect(state.report?.status).toBe("matched");
-    expect(state.report?.match?.mnemonic).toContain("ocean abstract");
+    const stamped = state.report?.match;
+    if (stamped === null || stamped === undefined || !("mnemonic" in stamped)) {
+      throw new Error("expected a phrase match payload");
+    }
+    expect(stamped.mnemonic).toContain("ocean abstract");
   });
 
   it("match survives arriving before any snapshot", () => {

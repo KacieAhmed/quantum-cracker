@@ -3,7 +3,8 @@ import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { randomInt } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createHash, randomInt } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -16,6 +17,12 @@ import {
 import { estimateAggregateRate, etaSeconds } from "./estimate.js";
 import { systemInfo } from "./system.js";
 import { splitSpace } from "./ranges.js";
+import {
+  PRESEED_ASSET_SHA256,
+  PRESEED_CONSENT_MESSAGE,
+  PRESEED_WATCHLIST_KEYS,
+  preseedNote,
+} from "./preseed.js";
 import {
   deriveMnemonic,
   listTargets,
@@ -103,9 +110,10 @@ interface CrackBody {
    * lottery over ALL checksum-valid phrases (2^128 ≈ 3.4×10^38). The flag is
    * the user's consent to those odds — address-only requests are refused
    * without it. Mutually exclusive with customWallet (separate permissions).
+   * Also the pre-seed consent flag (2^256 draws against the era P2PK list).
    */
   probe?: boolean;
-  /** Address-only lottery draw budget (safety cap on raw draws). */
+  /** Address-only / pre-seed lottery draw budget (safety cap on raw draws). */
   drawBudget?: number;
 }
 
@@ -125,7 +133,7 @@ const crackBodySchema = {
   required: ["chain", "mode"],
   properties: {
     chain: { type: "string", enum: ["bitcoin", "ethereum"] },
-    mode: { type: "string", enum: ["classic", "quantum"] },
+    mode: { type: "string", enum: ["classic", "quantum", "preseed"] },
     address: { type: "string", minLength: 1 },
     workers: { type: "integer", minimum: 1, maximum: 64 },
     force: { type: "boolean" },
@@ -423,6 +431,51 @@ export async function buildApp(
     return watchlist;
   }
 
+  /**
+   * The pre-seed P2PK watchlist asset: verified once, then handed to lanes
+   * by path (the engine re-verifies per spawn — belt and suspenders). BOTH
+   * sides pin the same SHA-256 and key count; any mismatch fails LOUDLY and
+   * refuses to run, because a corrupted watchlist entry would silently skip
+   * a recoverable key — the exact failure mode the dataset research bans
+   * spreadsheet exports for.
+   */
+  let p2pkWatchlistPath: string | null = null;
+  function ensureP2pkWatchlist(): string {
+    if (p2pkWatchlistPath !== null) return p2pkWatchlistPath;
+    const resolved = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../assets/p2pk-watchlist.txt",
+    );
+    const raw = readFileSync(resolved);
+    // Hash the canonical bytes: same normalization as the engine loader —
+    // strip one trailing LF (and a CR that LF may leave behind).
+    let end = raw.length;
+    if (end > 0 && raw[end - 1] === 0x0a) end -= 1;
+    if (end > 0 && raw[end - 1] === 0x0d) end -= 1;
+    const actual = createHash("sha256")
+      .update(raw.subarray(0, end))
+      .digest("hex");
+    if (actual !== PRESEED_ASSET_SHA256) {
+      throw new Error(
+        `SHA-256 mismatch: expected ${PRESEED_ASSET_SHA256}, got ${actual} — asset corrupted or swapped`,
+      );
+    }
+    const keys = raw
+      .toString("utf8")
+      .split("\n")
+      .filter((line) => {
+        const t = line.trim();
+        return t.length > 0 && !t.startsWith("#");
+      });
+    if (keys.length !== PRESEED_WATCHLIST_KEYS) {
+      throw new Error(
+        `expected ${PRESEED_WATCHLIST_KEYS} watchlist keys, found ${keys.length}`,
+      );
+    }
+    p2pkWatchlistPath = resolved;
+    return resolved;
+  }
+
   app.get("/system", async () => {
     return {
       ...sysInfo(),
@@ -546,6 +599,85 @@ export async function buildApp(
         return reply.code(409).send({
           error: "a run is already active — cancel it first",
           activeRunId: runManager.activeRunId,
+        });
+      }
+
+      // Pre-seed lottery: targetless by construction — the Satoshi-era P2PK
+      // watchlist IS the target set. Bitcoin only; consent-gated like the
+      // address-only lottery; anything that smuggles a user target in is a
+      // contract error, not a degraded run. (Checked before the address-only
+      // probe/customWallet conflict guard: that guard speaks for the
+      // address-only flow; pre-seed has its own contract.)
+      if (body.mode === "preseed") {
+        if (body.chain !== "bitcoin") {
+          return reply.code(422).send({
+            error:
+              "pre-seed mode is Bitcoin-only: era P2PK outputs are a Bitcoin construction — switch the chain toggle to bitcoin",
+          });
+        }
+        if (
+          body.address !== undefined ||
+          body.customWallet !== undefined ||
+          body.workers !== undefined
+        ) {
+          return reply.code(422).send({
+            error:
+              'pre-seed mode has no user-supplied target and no lanes: send { chain: "bitcoin", mode: "preseed", probe: true, drawBudget? } — the Satoshi-era P2PK watchlist is the target set',
+          });
+        }
+        if (body.probe !== true) {
+          return reply.code(422).send({ error: PRESEED_CONSENT_MESSAGE });
+        }
+        // Integrity first: a corrupted watchlist must refuse to run at all.
+        let preseedWatchlistPath: string;
+        try {
+          preseedWatchlistPath = ensureP2pkWatchlist();
+        } catch (err) {
+          return reply.code(503).send({
+            error: `pre-seed watchlist failed integrity checks — refusing to run: ${String(
+              err,
+            )}`,
+          });
+        }
+        const runId = newRunId();
+        const drawBudget = Math.min(
+          body.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
+          LOTTERY_DRAWS_MAX,
+        );
+        const seed = newSeed();
+        const richWl = await ensureWatchlist();
+        const probe: ProbeProvenance = {
+          targetSource: "preseed",
+          searchedSpace: "all-secp256k1-private-keys",
+          searchedRawCandidates: null,
+          searchedChecksumValid: null,
+          declaredSpaceSearched: false,
+          disclosure: preseedNote(),
+        };
+        const report = runManager.startPreSeed(
+          {
+            runId,
+            drawBudget,
+            progressMs: options.progressMs ?? PROGRESS_MS,
+            seed,
+            probe,
+            preseedWatchlistPath,
+            // The rich-address list only LABELS a discovery (richWatchlistHit);
+            // it never ends a pre-seed run.
+            watchlistPath: richWl.path,
+          },
+          broadcast,
+        );
+        return reply.code(201).send({
+          runId: report.runId,
+          mode: "preseed",
+          searchKind: "lottery",
+          drawBudget,
+          seed,
+          totalCandidates: report.totalCandidates,
+          note: preseedNote(),
+          probe,
+          targetNote: probe.disclosure,
         });
       }
 

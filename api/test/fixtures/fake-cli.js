@@ -173,6 +173,11 @@ const target = targets[0];
 const randomDraws = flag("random-draws", null);
 const isLottery = randomDraws !== null;
 const drawBudget = isLottery ? Number(randomDraws) : 0;
+// Pre-seed P2PK lottery: targetless — draws random scalars against the
+// --preseed-watchlist (the target set). FAKE_PRESEED_DISCOVERY=1 plants a
+// deterministic discovery at the last tick.
+const preseedDraws = flag("preseed-draws", null);
+const isPreseed = preseedDraws !== null;
 
 // Probe permission gate: mirrors the real engine — one boundary for BOTH
 // traversal styles. A target outside the embedded demo corpus requires
@@ -256,6 +261,103 @@ function emitMatch(mnemonic, matchedAddress, discovery) {
       derived_target: derivedTarget,
     }),
   );
+}
+
+if (isPreseed) {
+  const preseedPath = flag("preseed-watchlist", "");
+  const preseedWatchlist = readFileSync(preseedPath, "utf8")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"));
+  const budget = Number(preseedDraws);
+  console.log(
+    JSON.stringify({
+      event: "start",
+      mode: "preseed",
+      draw_budget: budget,
+      watchlist_keys: preseedWatchlist.length,
+      seed: flag("seed", ""),
+      probe,
+    }),
+  );
+
+  const discoveryArmedPreseed =
+    process.env.FAKE_PRESEED_DISCOVERY === "1" && preseedWatchlist.length > 0;
+  const totalTicks = Math.max(2, TICKS);
+  const step = Math.max(1, Math.ceil(budget / totalTicks));
+  let drawsDone = 0;
+  let tick = 0;
+  const timer = setInterval(() => {
+    tick += 1;
+    drawsDone = Math.min(drawsDone + step, budget);
+    // Deterministic discovery: the fixture-verse k=1 key material, frozen.
+    // There is no user target — the payload carries the matched watchlist
+    // entry and the derived encodings/addresses, nothing phrase-shaped.
+    if (discoveryArmedPreseed && tick === totalTicks - 1) {
+      // The rich-address watchlist (--watchlist) only LABELS the discovery:
+      // the fixture checks whether the derived legacy address is listed.
+      const richHit = watchlist
+        .map((a) => a.toLowerCase())
+        .includes("1bggz9tcn4rm9kbzdn7kprqz87sz26samh");
+      console.log(
+        JSON.stringify({
+          event: "match",
+          probe,
+          match: {
+            preseed: {
+              private_key_hex:
+                "0000000000000000000000000000000000000000000000000000000000000001",
+              wif: "KwDiBf89QgGbjEhKnhXJuH7LrciVNoZ8q1vDk3GXKVuPMd1ZbVxd",
+              pubkey_compressed_hex:
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+              pubkey_uncompressed_hex:
+                "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+              matched_watchlist_key: preseedWatchlist[0],
+              address_p2pkh_compressed: "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH",
+              address_p2pkh_uncompressed: "1EHNa6P4AAaDEoRCvJ4m1jWWtLxE5vCjyS",
+              rich_watchlist_hit: richHit,
+            },
+          },
+        }),
+      );
+      clearInterval(timer);
+      process.exit(0);
+    }
+    console.log(
+      JSON.stringify({
+        event: "progress",
+        mode: "preseed",
+        draw_budget: budget,
+        draws_done: drawsDone,
+        draws_per_sec: 110000,
+        matches: 0,
+        frontier_prefix: null,
+        frontier_pubkey: `02fixture${String(drawsDone).padStart(8, "0")}`,
+        probe,
+      }),
+    );
+    if (drawsDone >= budget) {
+      console.log(
+        JSON.stringify({
+          event: "done",
+          mode: "preseed",
+          draw_budget: budget,
+          draws_done: drawsDone,
+          elapsed_ms: 5,
+          draws_per_sec: 110000,
+          matches: 0,
+          recovered: null,
+          probe,
+        }),
+      );
+      clearInterval(timer);
+      process.exit(1); // budget spent without a discovery (not an error)
+    }
+  }, progressMs);
+  process.on("SIGTERM", () => {
+    clearInterval(timer);
+    process.exit(143);
+  });
 }
 
 if (isLottery) {
@@ -363,7 +465,7 @@ if (isLottery) {
 }
 
 // Bounded sweep (limited-keyspace templates): unchanged semantics.
-if (!isLottery) {
+if (!isLottery && !isPreseed) {
   const end = Math.min(start + count, space);
   console.log(
     JSON.stringify({

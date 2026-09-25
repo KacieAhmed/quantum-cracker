@@ -162,6 +162,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "cracker-core",
+ "hex",
  "rayon",
  "serde_json",
 ]

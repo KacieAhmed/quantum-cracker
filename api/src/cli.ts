@@ -2,6 +2,19 @@ import { spawn } from "node:child_process";
 import readline from "node:readline";
 import type { LaneRange } from "./types.js";
 
+/** Pre-seed discovery payload as the engine emits it (snake_case JSON).
+ * Mirrors cracker_core::preseed::PreSeedDiscovery. */
+export interface PreSeedDiscoveryRaw {
+  private_key_hex: string;
+  wif: string;
+  pubkey_compressed_hex: string;
+  pubkey_uncompressed_hex: string;
+  matched_watchlist_key: string;
+  address_p2pkh_compressed: string;
+  address_p2pkh_uncompressed: string;
+  rich_watchlist_hit: boolean;
+}
+
 /** Raw JSON events cracker-cli streams on stdout (one per line). */
 export interface CliEvent {
   event: "start" | "progress" | "match" | "done" | "pinned";
@@ -12,10 +25,14 @@ export interface CliEvent {
   workers?: number | null;
   /** Pool mode vs full-space lottery mode (done/start events). */
   mode?: string;
-  /** Lottery-only counters: consumed draw budget + checksum-valid draws. */
+  /** Lottery/pre-seed counters: consumed draw budget + checksum-valid draws. */
   draw_budget?: number;
   draws_done?: number;
   checksum_valid?: number;
+  /** Pre-seed only: raw draws per second (scalar draws, not derivations). */
+  draws_per_sec?: number;
+  /** Pre-seed only: watchlist size the lane loaded (start events). */
+  watchlist_keys?: number;
   /** Shuffle/draw-stream seed the lane is running under. */
   seed?: string;
   prefixes_done?: number;
@@ -25,6 +42,8 @@ export interface CliEvent {
   matches?: number;
   frontier_prefix?: number;
   frontier_phrase?: string | null;
+  /** Pre-seed only: most recently tested public key (live feed display). */
+  frontier_pubkey?: string | null;
   /** The BIP-32 path the engine actually walked for this match. */
   derivation_path?: string;
   /**
@@ -32,12 +51,16 @@ export interface CliEvent {
    * rather than the requested target (a chance real-world wallet hit).
    */
   discovery?: boolean;
-  match?: {
-    mnemonic: string;
-    path: string;
-    address: string;
-    all_addresses: { eth: string; btc_p2pkh: string; btc_bech32: string };
-  };
+  match?:
+    | {
+        mnemonic: string;
+        path: string;
+        address: string;
+        all_addresses: { eth: string; btc_p2pkh: string; btc_bech32: string };
+      }
+    // Pre-seed discovery: the payload IS the found key material — there is
+    // no user target, so the phrase-shaped match fields do not exist.
+    | { preseed: PreSeedDiscoveryRaw };
   recovered?: string | null;
   /** Pinned-event fields: the tested-first candidate and its label. */
   phrase?: string;
@@ -89,9 +112,16 @@ export interface CorpusDoc {
 /** Options for one classic lane subprocess. */
 export interface LaneSpec extends LaneRange {
   id: number;
-  address: string;
-  /** Engine address kind: eth | btc-p2pkh | btc-bech32 (also btc). */
-  addressType: string;
+  /**
+   * Phrase-lottery/bounded lanes: the derivation target. Undefined for
+   * pre-seed lanes (targetless — the P2PK watchlist is the target set).
+   */
+  address?: string;
+  /**
+   * Engine address kind: eth | btc-p2pkh | btc-bech32 (also btc). Undefined
+   * for pre-seed lanes.
+   */
+  addressType?: string;
   progressMs: number;
   /**
    * Limited-keyspace pool config (pool words, fixed words, varied positions)
@@ -125,9 +155,21 @@ export interface LaneSpec extends LaneRange {
    */
   derivedTarget?: boolean;
   /**
+   * Pre-seed lottery mode: sample this many random secp256k1 scalars in
+   * [1, n), derive each public key, and test membership in the P2PK
+   * watchlist (preseedWatchlistPath). Targetless — no --target is passed.
+   */
+  preseedDraws?: number | null;
+  /**
+   * The Satoshi-era P2PK watchlist for pre-seed runs (--preseed-watchlist).
+   * Required when preseedDraws is set; the engine fails loudly on mismatch.
+   */
+  preseedWatchlistPath?: string | null;
+  /**
    * Discovery watchlist: addresses whose derivation ends the run as a labeled
    * discovery. Unioned with the engine's embedded demo corpus on the CLI side;
-   * null/absent runs without one.
+   * null/absent runs without one. In pre-seed mode this is the rich-address
+   * list used only to LABEL a discovery, never to end the run.
    */
   watchlistPath?: string | null;
 }
@@ -140,43 +182,64 @@ export interface LaneProcess {
   kill(signal?: NodeJS.Signals): void;
 }
 
-/** Spawn one cracker-cli lane: a bounded range scan or a lottery sampler. */
+/** Spawn one cracker-cli lane: a bounded range scan, a lottery sampler, or a
+ * pre-seed P2PK draw loop (targetless). */
 export function spawnLane(cliPath: string, spec: LaneSpec): LaneProcess {
-  const args = [
-    "--target",
-    spec.address,
-    "--address-type",
-    spec.addressType,
-  ];
-  if (spec.randomDraws !== undefined && spec.randomDraws !== null) {
-    // Full-space lottery: the CLI parallelizes internally and ends at the
-    // draw budget or when stopped.
+  const args: string[] = [];
+  if (spec.preseedDraws !== undefined && spec.preseedDraws !== null) {
+    // Pre-seed lottery: targetless — the P2PK watchlist IS the target set,
+    // and the engine validates its integrity before the first draw. The
+    // lane uses the engine's default parallelism (the process IS the run).
     args.push(
-      "--random-draws",
-      String(spec.randomDraws),
-      "--workers",
-      "1",
+      "--preseed-draws",
+      String(spec.preseedDraws),
+      "--preseed-watchlist",
+      spec.preseedWatchlistPath ?? "",
       "--progress-ms",
       String(spec.progressMs),
     );
   } else {
-    args.push(
-      "--start",
-      String(spec.start),
-      "--count",
-      String(spec.count),
-      "--workers",
-      "1",
-      "--progress-ms",
-      String(spec.progressMs),
-    );
+    if (spec.address === undefined || spec.addressType === undefined) {
+      // Loud, not a silent empty --target: a spec without preseedDraws must
+      // carry its derivation target.
+      throw new Error(
+        "lane spec must set preseedDraws (pre-seed) or address+addressType",
+      );
+    }
+    args.push("--target", spec.address, "--address-type", spec.addressType);
+    if (spec.randomDraws !== undefined && spec.randomDraws !== null) {
+      // Full-space lottery: the CLI parallelizes internally and ends at the
+      // draw budget or when stopped.
+      args.push(
+        "--random-draws",
+        String(spec.randomDraws),
+        "--workers",
+        "1",
+        "--progress-ms",
+        String(spec.progressMs),
+      );
+    } else {
+      args.push(
+        "--start",
+        String(spec.start),
+        "--count",
+        String(spec.count),
+        "--workers",
+        "1",
+        "--progress-ms",
+        String(spec.progressMs),
+      );
+    }
   }
   // Shared seed + explicit pin control on every lane: "" disables pinning
   // (the API pins lane 0 only, so the calibration/own phrase is tested once).
   if (spec.seed !== undefined && spec.seed !== null) {
     args.push("--seed", spec.seed);
   }
-  args.push("--pinned-first", spec.pinnedFirst ?? "");
+  if (spec.preseedDraws === undefined || spec.preseedDraws === null) {
+    // Pinning is a phrase-lottery concept; pre-seed draws have no phrase.
+    args.push("--pinned-first", spec.pinnedFirst ?? "");
+  }
   if (spec.poolJsonPath !== undefined && spec.poolJsonPath !== null) {
     args.push("--pool-json", spec.poolJsonPath);
   }

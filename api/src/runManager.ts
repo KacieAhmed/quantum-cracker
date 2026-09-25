@@ -2,11 +2,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   Aggregate,
+  AnyMatchInfo,
   Chain,
   CustomWalletProvenance,
   LaneState,
   MatchInfo,
   Mode,
+  PreSeedDiscoveryInfo,
   ProbeProvenance,
   RunReport,
   RunStatus,
@@ -80,6 +82,25 @@ export interface StartLotteryParams {
   mode?: Mode;
 }
 
+/** Pre-seed P2PK lottery params: targetless — the watchlist IS the target set. */
+export interface StartPreSeedParams {
+  runId: string;
+  /** Safety cap on raw scalar draws — never a coverage claim. */
+  drawBudget: number;
+  progressMs: number;
+  /** Draw-stream seed (kept for parity with lottery runs). */
+  seed?: string | null;
+  /** The pre-seed consent gate: the API resolved it (probe: true) and stamps
+   * the disclosure here; the lane runs with --probe so events carry the label. */
+  probe: ProbeProvenance;
+  /** The Satoshi-era P2PK watchlist asset (--preseed-watchlist). Integrity
+   * is verified by BOTH sides: the API pins its SHA-256, the engine re-checks
+   * per spawn — belt and suspenders on the load-bearing list. */
+  preseedWatchlistPath: string;
+  /** Rich-address watchlist: labels a discovery, never ends the run. */
+  watchlistPath?: string | null;
+}
+
 /** Broadcast sink (the server wires this to every connected WebSocket). */
 export type Broadcast = (msg: ServerMessage) => void;
 
@@ -97,7 +118,7 @@ interface ActiveRun {
   startedAtMs: number;
   procs: Map<number, LaneProcess>;
   status: RunStatus;
-  match: MatchInfo | null;
+  match: AnyMatchInfo | null;
   firstMatchWorker: number | null;
   errorMessage: string | null;
   broadcastTimer: NodeJS.Timeout | null;
@@ -260,7 +281,66 @@ export class RunManager {
     return report;
   }
 
-  /** Halt the active run: kill every lane; settle() finalizes as cancelled. */
+  /**
+   * Pre-seed P2PK lottery: one lane draws random secp256k1 scalars in [1, n),
+   * derives each public key, and tests membership in the Satoshi-era P2PK
+   * watchlist until the draw budget is spent, the run is stopped, or a
+   * watchlisted key is found (an immediate, frozen DISCOVERY — there is no
+   * user target in this mode). Bitcoin only; the caller owns the consent gate.
+   */
+  startPreSeed(params: StartPreSeedParams, broadcast: Broadcast): RunReport {
+    if (this.active) throw new Error("a run is already active");
+    const report = newReport({
+      runId: params.runId,
+      chain: "bitcoin",
+      mode: "preseed",
+      // No user target exists in this mode; the discovery payload carries
+      // the matched watchlist key and its derived addresses.
+      address: "",
+      workersRequested: 1,
+      // The run's bounded resource is the draw budget, not the space.
+      totalCandidates: params.drawBudget,
+      rawCandidates: params.drawBudget,
+      lanes: [emptyLane(0, { start: 0, count: 0 })],
+      customWallet: null,
+      probe: params.probe,
+    });
+    report.searchKind = "lottery";
+    const run: ActiveRun = {
+      report,
+      startedAtMs: Date.now(),
+      procs: new Map(),
+      status: "running",
+      match: null,
+      firstMatchWorker: null,
+      errorMessage: null,
+      broadcastTimer: null,
+      broadcast,
+      onSettled: null,
+    };
+    this.active = run;
+    run.broadcastTimer = setInterval(
+      () => this.broadcastSnapshot(),
+      this.opts.broadcastIntervalMs,
+    );
+    const proc = this.spawnLaneFn(this.opts.cliPath, {
+      id: 0,
+      start: 0,
+      // The lane's span is the draw budget, so fraction = draws/budget.
+      count: params.drawBudget,
+      progressMs: params.progressMs,
+      preseedDraws: params.drawBudget,
+      preseedWatchlistPath: params.preseedWatchlistPath,
+      watchlistPath: params.watchlistPath ?? null,
+      seed: params.seed ?? null,
+      // The lane runs with the probe label inseparable from the consent.
+      probe: true,
+    });
+    run.procs.set(0, proc);
+    void this.consumeLane(run, proc);
+    this.broadcastSnapshot();
+    return report;
+  }
   cancel(): boolean {
     const run = this.active;
     if (!run || run.status !== "running") return false;
@@ -324,12 +404,13 @@ export class RunManager {
   ): void {
     switch (event.event) {
       case "start": {
-        // Lottery lanes span their draw budget (the only bounded resource);
-        // bounded lanes span prefix ordinals. Reading draw_budget first keeps
-        // the span units aligned regardless of what else the event carries.
+        // Lottery/pre-seed lanes span their draw budget (the only bounded
+        // resource); bounded lanes span prefix ordinals. Reading draw_budget
+        // first keeps the span units aligned regardless of what else the
+        // event carries.
         lane.end =
           lane.start +
-          (event.mode === "lottery"
+          (event.mode === "lottery" || event.mode === "preseed"
             ? (event.draw_budget ?? 0)
             : (event.end ?? event.total_prefixes ?? 0));
         break;
@@ -354,9 +435,19 @@ export class RunManager {
         lane.prefixesDone =
           event.prefixes_done ?? event.draws_done ?? lane.prefixesDone;
         lane.derived = event.derived ?? lane.derived;
-        lane.rate = event.derived_per_sec ?? lane.rate;
+        // Pre-seed progress has no derivations — its honest rate is raw
+        // scalar draws/s, the figure the disclosure odds are computed from.
+        lane.rate =
+          event.mode === "preseed"
+            ? (event.draws_per_sec ?? lane.rate)
+            : (event.derived_per_sec ?? lane.rate);
         lane.frontierPrefix = event.frontier_prefix ?? lane.frontierPrefix;
-        lane.frontierPhrase = event.frontier_phrase ?? null;
+        // Pre-seed's live feed shows the most recently tested PUBLIC KEY —
+        // the same slot the phrase feed uses, honestly relabeled in the UI.
+        lane.frontierPhrase =
+          event.frontier_pubkey !== undefined
+            ? event.frontier_pubkey
+            : (event.frontier_phrase ?? null);
         const span = lane.end - lane.start;
         lane.fraction = span > 0 ? lane.prefixesDone / span : 1;
         break;
@@ -364,14 +455,33 @@ export class RunManager {
       case "match": {
         const m = event.match;
         if (!m) break;
-        const info: MatchInfo = {
-          mnemonic: m.mnemonic,
-          path: m.path,
-          address: m.address,
-          allAddresses: m.all_addresses,
-          derivationPath: event.derivation_path,
-          discovery: event.discovery ?? false,
-        };
+        let info: MatchInfo | PreSeedDiscoveryInfo;
+        if ("preseed" in m) {
+          const p = m.preseed;
+          info = {
+            privateKeyHex: p.private_key_hex,
+            wif: p.wif,
+            pubkeyCompressedHex: p.pubkey_compressed_hex,
+            pubkeyUncompressedHex: p.pubkey_uncompressed_hex,
+            matchedWatchlistKey: p.matched_watchlist_key,
+            addressP2pkhCompressed: p.address_p2pkh_compressed,
+            addressP2pkhUncompressed: p.address_p2pkh_uncompressed,
+            richWatchlistHit: p.rich_watchlist_hit,
+          };
+          // A pre-seed discovery is ALWAYS a discovery — there is no user
+          // target. Stamp it on the report immediately (not just at settle)
+          // so snapshots and the match broadcast carry it.
+          run.report.preseedDiscovery = info;
+        } else {
+          info = {
+            mnemonic: m.mnemonic,
+            path: m.path,
+            address: m.address,
+            allAddresses: m.all_addresses,
+            derivationPath: event.derivation_path,
+            discovery: event.discovery ?? false,
+          };
+        }
         if (run.status === "running") {
           run.status = "matched";
           run.match = info;
@@ -421,6 +531,7 @@ export class RunManager {
     }
     run.report.status = run.status;
     run.report.match = run.match;
+    run.report.preseedDiscovery = isPreseed(run.match) ? run.match : null;
     run.report.finishedAt = new Date().toISOString();
     run.report.elapsedMs = Date.now() - run.startedAtMs;
     run.report.aggregate = this.aggregateOf(run);
@@ -483,6 +594,13 @@ export class RunManager {
   }
 }
 
+/** Pre-seed discoveries and phrase matches share one slot; narrow here. */
+function isPreseed(
+  match: MatchInfo | PreSeedDiscoveryInfo | null,
+): match is PreSeedDiscoveryInfo {
+  return match !== null && "privateKeyHex" in match;
+}
+
 function newReport(args: {
   runId: string;
   chain: Chain;
@@ -510,6 +628,7 @@ function newReport(args: {
     elapsedMs: null,
     aggregate: null,
     match: null,
+    preseedDiscovery: null,
     customWallet: args.customWallet,
     probe: args.probe,
   };

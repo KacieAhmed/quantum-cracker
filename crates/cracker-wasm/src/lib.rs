@@ -30,6 +30,11 @@ struct WorkerConfigJson {
     targets: Vec<WorkerTargetJson>,
     #[serde(default)]
     passphrase: String,
+    /// Shuffle seed for the randomized traversal; workers of one page scan
+    /// should share it so their disjoint ranges stay disjoint under the
+    /// shuffle. Absent = seed 0 (a fixed but still shuffled order).
+    #[serde(default)]
+    traversal_seed: Option<u64>,
 }
 
 fn js_err(e: cracker_core::CrackerError) -> JsValue {
@@ -84,7 +89,17 @@ impl CrackerWorker {
             });
         }
         Ok(CrackerWorker {
-            searcher: Searcher::new(SearchConfig { pool, targets }, true),
+            searcher: Searcher::new(
+                SearchConfig {
+                    pool,
+                    targets,
+                    traversal_seed: cfg.traversal_seed.unwrap_or(0),
+                    // The pinned first candidate is tested once by the run
+                    // owner before lanes start — never per worker lane.
+                    pinned_first: None,
+                },
+                true,
+            ),
             cursor: 0,
             end: 0,
         })

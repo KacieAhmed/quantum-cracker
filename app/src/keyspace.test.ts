@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   BIP39_WORDLIST_SIZE,
+  FULL_SPACE_RAW_ASSEMBLIES,
+  FULL_SPACE_VALID_PHRASES,
   VARY_SLOTS_MAX,
+  lotteryExpectedWaitYears,
+  lotteryOddsOneInPerHour,
   templateSpace,
   varySlotError,
 } from "./keyspace.js";
@@ -63,5 +67,29 @@ describe("varySlotError", () => {
   it("restricts varying to 12-word phrases", () => {
     expect(varySlotError([], 0, 24)).toContain("12-word");
     expect(varySlotError([], 0, 15)).toContain("12-word");
+  });
+});
+
+describe("lottery odds", () => {
+  it("discloses the raw assembly count only as raw", () => {
+    expect(FULL_SPACE_RAW_ASSEMBLIES).toBe(2048 ** 12);
+    expect(FULL_SPACE_VALID_PHRASES).toBe(2 ** 128);
+    // Exactly 1/16 of raw assemblies survive the checksum filter.
+    expect(FULL_SPACE_RAW_ASSEMBLIES / FULL_SPACE_VALID_PHRASES).toBeCloseTo(
+      16,
+      0,
+    );
+  });
+
+  it("puts one phrase's odds at about 1 in 6.7×10^31 per hour at ~1,400 draws/s", () => {
+    const odds = lotteryOddsOneInPerHour();
+    expect(odds).toBeGreaterThan(6.5e31);
+    expect(odds).toBeLessThan(7e31);
+  });
+
+  it("keeps the expected wait around 10^28 years", () => {
+    const years = lotteryExpectedWaitYears();
+    expect(years).toBeGreaterThan(7e27);
+    expect(years).toBeLessThan(1e28);
   });
 });

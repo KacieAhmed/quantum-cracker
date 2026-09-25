@@ -21,6 +21,8 @@ fn corpus_searcher(target_address: &str) -> Searcher {
                 kind: target.kind(),
                 bytes: target.bytes(),
             }],
+            traversal_seed: 0,
+            pinned_first: None,
         },
         true,
     )
@@ -32,7 +34,10 @@ const TARGET_PREFIX_ORDINAL: u64 = (((7u64 * 16 + 11) * 16 + 5) * 16 + 7) * 16 +
 #[test]
 fn engine_recovers_the_target_from_its_prefix_ordinal() {
     let searcher = corpus_searcher(TARGET_ETH);
-    let matches = searcher.run_range(TARGET_PREFIX_ORDINAL..TARGET_PREFIX_ORDINAL + 1);
+    // The traversal is shuffled: claim the preimage of the target's prefix
+    // ordinal, so the one-ordinal range lands on the target's candidate.
+    let claimed = searcher.decode_ordinal(TARGET_PREFIX_ORDINAL);
+    let matches = searcher.run_range(claimed..claimed + 1);
     assert_eq!(matches.len(), 1);
     assert_eq!(
         matches[0].mnemonic,

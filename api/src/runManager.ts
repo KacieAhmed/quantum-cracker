@@ -26,8 +26,34 @@ export interface StartClassicParams {
   customWallet?: CustomWalletProvenance | null;
   /** Limited-keyspace pool config passed to every lane (--pool-json). */
   poolJsonPath?: string | null;
+  /**
+   * Shuffle seed for the randomized traversal — ALL lanes share it, so
+   * their claimed ranges stay disjoint under the same permutation.
+   */
+  seed?: string | null;
+  /**
+   * Pinned first candidate (own-wallet runs: the user's phrase; corpus
+   * runs: the calibration phrase). Tested before any traversal, once —
+   * lane 0 only.
+   */
+  pinnedFirst?: string | null;
   /** Called once when the run settles; the pool file's owner cleans it up. */
   onSettled?: () => void;
+}
+
+export interface StartLotteryParams {
+  runId: string;
+  chain: Chain;
+  address: string;
+  addressType: string;
+  /** Safety cap on raw draws — the run never claims to finish the space. */
+  drawBudget: number;
+  progressMs: number;
+  customWallet?: CustomWalletProvenance | null;
+  /** Shuffle/draw-stream seed (one lane; kept for parity with runs). */
+  seed?: string | null;
+  /** Pinned first candidate — the user's own phrase on own-wallet runs. */
+  pinnedFirst?: string | null;
 }
 
 export interface StartQuantumParams {
@@ -141,10 +167,70 @@ export class RunManager {
         addressType: params.addressType,
         progressMs: params.progressMs,
         poolJsonPath: params.poolJsonPath ?? null,
+        seed: params.seed ?? null,
+        pinnedFirst: id === 0 ? (params.pinnedFirst ?? null) : "",
       });
       run.procs.set(id, proc);
       void this.consumeLane(run, proc);
     }
+    this.broadcastSnapshot();
+    return report;
+  }
+
+  /**
+   * Full-space lottery: one lane samples raw phrases uniformly at random
+   * over ALL checksum-valid 12-word assemblies (2^128 ≈ 3.4×10^38 of them)
+   * until the draw budget is spent or the run is stopped. No coverage
+   * claim — the caller's disclosure copy states the odds up front.
+   */
+  startLottery(params: StartLotteryParams, broadcast: Broadcast): RunReport {
+    if (this.active) throw new Error("a run is already active");
+    const report = newReport({
+      runId: params.runId,
+      chain: params.chain,
+      mode: "classic",
+      address: params.address,
+      workersRequested: 1,
+      // The run's bounded resource is the draw budget, not the space.
+      totalCandidates: params.drawBudget,
+      rawCandidates: params.drawBudget,
+      lanes: [emptyLane(0, { start: 0, count: 0 })],
+      customWallet: params.customWallet ?? null,
+    });
+    report.searchKind = "lottery";
+    const run: ActiveRun = {
+      report,
+      startedAtMs: Date.now(),
+      procs: new Map(),
+      status: "running",
+      match: null,
+      firstMatchWorker: null,
+      quantumPayload: null,
+      errorMessage: null,
+      broadcastTimer: null,
+      broadcast,
+      onSettled: null,
+    };
+    this.active = run;
+    run.broadcastTimer = setInterval(
+      () => this.broadcastSnapshot(),
+      this.opts.broadcastIntervalMs,
+    );
+    const proc = this.spawnLaneFn(this.opts.cliPath, {
+      id: 0,
+      start: 0,
+      // The lane's span is the draw budget, so fraction = draws/budget.
+      count: params.drawBudget,
+      address: params.address,
+      addressType: params.addressType,
+      progressMs: params.progressMs,
+      poolJsonPath: null,
+      randomDraws: params.drawBudget,
+      seed: params.seed ?? null,
+      pinnedFirst: params.pinnedFirst ?? null,
+    });
+    run.procs.set(0, proc);
+    void this.consumeLane(run, proc);
     this.broadcastSnapshot();
     return report;
   }
@@ -234,11 +320,29 @@ export class RunManager {
   ): void {
     switch (event.event) {
       case "start": {
-        lane.end = lane.start + (event.end ?? event.total_prefixes ?? 0);
+        lane.end =
+          lane.start + (event.end ?? event.total_prefixes ?? event.draw_budget ?? 0);
+        break;
+      }
+      case "pinned": {
+        // Tested first, labeled "pinned — not random": the randomization
+        // boundary in the UI feed. `tested: false` means the phrase failed
+        // BIP-39 validation and was skipped, never silently remapped.
+        if (event.phrase !== undefined) {
+          run.broadcast({
+            type: "pinned",
+            runId: run.report.runId,
+            phrase: event.phrase,
+            label: event.label ?? "pinned — not random",
+            tested: event.tested ?? false,
+          });
+        }
         break;
       }
       case "progress": {
-        lane.prefixesDone = event.prefixes_done ?? lane.prefixesDone;
+        // Lottery lanes report consumed draw budget instead of prefix ordinals.
+        lane.prefixesDone =
+          event.prefixes_done ?? event.draws_done ?? lane.prefixesDone;
         lane.derived = event.derived ?? lane.derived;
         lane.rate = event.derived_per_sec ?? lane.rate;
         lane.frontierPrefix = event.frontier_prefix ?? lane.frontierPrefix;
@@ -345,14 +449,19 @@ export class RunManager {
 
   private aggregateOf(run: ActiveRun): Aggregate {
     let derived = 0;
+    let consumed = 0;
     let rate = 0;
     for (const lane of run.report.lanes) {
       derived += lane.derived;
+      // Lottery lanes report consumed raw draws (including checksum-rejected
+      // assemblies) in prefixesDone; bounded lanes derive once per ordinal,
+      // so max() is the honest consumed-work figure for both.
+      consumed += Math.max(lane.derived, lane.prefixesDone);
       rate += lane.rate;
     }
     const total = run.report.totalCandidates;
-    const fraction = total > 0 ? derived / total : 0;
-    const etaSeconds = rate > 0 ? (total - derived) / rate : null;
+    const fraction = total > 0 ? consumed / total : 0;
+    const etaSeconds = rate > 0 ? (total - consumed) / rate : null;
     return {
       derived,
       derivedPerSec: rate,
@@ -361,7 +470,6 @@ export class RunManager {
       matches: run.match ? 1 : 0,
     };
   }
-
   private broadcastSnapshot(): void {
     const run = this.active;
     if (!run) return;

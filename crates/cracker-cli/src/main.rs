@@ -10,6 +10,7 @@
 //! cracker-cli --target 0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5 --address-type eth
 //! cracker-cli --target 16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp --address-type btc
 //! cracker-cli --target 0x... --start 524288 --count 4096 --workers 4
+//! cracker-cli --target 0x... --random-draws 1000000 --workers 4
 //! ```
 
 use std::io::Write;
@@ -20,8 +21,19 @@ use std::time::{Duration, Instant};
 use clap::{Parser, ValueEnum};
 use cracker_core::engine::{Match, SearchConfig, Searcher, Target};
 use cracker_core::pool::{PoolConfigJson, PoolSearch, WalletsFileJson};
+use cracker_core::sampler::{LotteryConfig, LotterySearcher};
 use cracker_core::validate::parse_target;
 use cracker_core::{CrackerError, PathKind};
+
+/// The canonical calibration phrase: every run tests it first (pinned, not
+/// random) before any traversal or random sampling — a reproducible timing
+/// anchor. Own-wallet runs pin the user's own phrase instead.
+const CALIBRATION_PHRASE: &str =
+    "permit bean gaze lawsuit expect exclude poet mercy enrich measure ocean since";
+
+/// Label attached to the pinned first candidate's feed entry: the visible
+/// randomization boundary in the tested-phrases display.
+const PINNED_LABEL: &str = "pinned — not random";
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
 enum AddressTypeArg {
@@ -77,12 +89,33 @@ struct Args {
     passphrase: String,
 
     /// First prefix ordinal to scan (resumable/splittable ranges).
-    #[arg(long, default_value_t = 0)]
-    start: u64,
+    #[arg(long)]
+    start: Option<u64>,
 
     /// Number of prefix ordinals to scan (default: to the end of the space).
-    #[arg(long, default_value_t = 0)]
-    count: u64,
+    #[arg(long)]
+    count: Option<u64>,
+
+    /// Lottery mode: sample this many raw phrases uniformly at random over
+    /// the FULL 2048^12 space (all 12 word slots randomized; a draw reaches
+    /// the derivation only when checksum-valid). No coverage claim — the run
+    /// ends at this budget or when stopped. Cannot be combined with
+    /// --start/--count/--pool-json.
+    #[arg(long)]
+    random_draws: Option<u64>,
+
+    /// Randomness seed: the shuffle order for bounded sweeps, the draw
+    /// stream for the lottery. Lanes of one run must share it. Default:
+    /// entropy from the clock and pid.
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Phrase tested first, before any traversal or sampling — the pinned
+    /// calibration candidate. Own-wallet runs pass the user's own phrase
+    /// here; the default is the canonical calibration phrase. Pass "" to
+    /// disable pinning entirely.
+    #[arg(long, default_value = CALIBRATION_PHRASE)]
+    pinned_first: String,
 
     /// Worker threads (default: available parallelism).
     #[arg(long)]
@@ -162,6 +195,15 @@ fn main() {
         eprintln!("error: --target <TARGETS> is required for a search");
         std::process::exit(2);
     }
+    if args.random_draws.is_some()
+        && (args.start.is_some() || args.count.is_some() || args.pool_json.is_some())
+    {
+        eprintln!(
+            "error: --random-draws runs the full-space lottery and cannot be combined \
+             with --start, --count or --pool-json"
+        );
+        std::process::exit(2);
+    }
     match run(&args) {
         Ok(found) => std::process::exit(if found { 0 } else { 1 }),
         Err(err) => {
@@ -169,6 +211,52 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+fn run(args: &Args) -> cracker_core::Result<bool> {
+    if args.random_draws.is_some() {
+        run_lottery(args)
+    } else {
+        run_pool(args)
+    }
+}
+
+/// The run's randomness seed: explicit, or clock+pid entropy. Every lane of
+/// a run shares it — the same shuffled space, the same draw-stream base.
+fn run_seed(args: &Args) -> u64 {
+    args.seed.unwrap_or_else(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        nanos ^ (u64::from(std::process::id()) << 32)
+    })
+}
+
+/// The pinned first candidate for this run: an explicit phrase, or the
+/// calibration phrase by default; an empty string disables pinning.
+fn pinned_candidate(args: &Args) -> Option<String> {
+    match args.pinned_first.as_str() {
+        "" => None,
+        s => Some(s.to_string()),
+    }
+}
+
+/// Emit the pinned-candidate event (the tested-phrases feed renders the
+/// label). `tested` is false when the pin fails BIP-39 validation — it is
+/// never silently remapped to a recomputed phrase.
+fn emit_pinned_event(pin: &str, tested: bool) -> cracker_core::Result<()> {
+    let mut out = std::io::stdout().lock();
+    let e = serde_json::json!({
+        "event": "pinned",
+        "phrase": pin,
+        "label": PINNED_LABEL,
+        "tested": tested,
+        "matched": false,
+    });
+    writeln!(out, "{e}")?;
+    out.flush()?;
+    Ok(())
 }
 
 fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
@@ -308,7 +396,8 @@ fn list_targets() -> cracker_core::Result<serde_json::Value> {
     }))
 }
 
-fn run(args: &Args) -> cracker_core::Result<bool> {
+fn run_pool(args: &Args) -> cracker_core::Result<bool> {
+    let shuffle_seed = run_seed(args);
     let pool = load_pool(args)?;
     let mut targets = Vec::new();
     for t in &args.targets {
@@ -332,20 +421,27 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
             .map_err(|e| CrackerError::Other(e.to_string()))?;
     }
 
+    let start = args.start.unwrap_or(0);
+    let count = args.count.unwrap_or(0);
+    let pin = pinned_candidate(args);
     let searcher = Arc::new(Searcher::new(
-        SearchConfig { pool, targets },
+        SearchConfig {
+            pool,
+            targets,
+            traversal_seed: shuffle_seed,
+            pinned_first: pin.clone(),
+        },
         !args.exhaustive,
     ));
     let total = searcher.total_prefixes();
-    let end = if args.count == 0 {
+    let end = if count == 0 {
         total
     } else {
-        args.start.saturating_add(args.count).min(total)
+        start.saturating_add(count).min(total)
     };
-    if args.start >= total {
+    if start >= total {
         return Err(CrackerError::Other(format!(
-            "--start {} is beyond the {total}-prefix space",
-            args.start
+            "--start {start} is beyond the {total}-prefix space"
         )));
     }
 
@@ -353,9 +449,11 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
         let mut out = std::io::stdout().lock();
         let start_event = serde_json::json!({
             "event": "start",
+            "mode": "pool",
+            "seed": shuffle_seed,
             "total_prefixes": total,
             "raw_candidates": searcher.config.pool.raw_candidates(),
-            "start": args.start,
+            "start": start,
             "end": end,
             "workers": args.workers,
             "address_type": args.address_type.label(),
@@ -363,6 +461,34 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
         });
         writeln!(out, "{start_event}")?;
         out.flush()?;
+    }
+
+    // Pinned first candidate: tested before any traversal work, labeled so
+    // the randomization boundary is visible in the tested-phrases feed. A
+    // genuine match at candidate #1 ends the run — correct for own-wallet
+    // runs, not a bug.
+    if let Some(pin) = &pin {
+        let pin_valid = cracker_core::bip39::validate(pin).is_ok();
+        emit_pinned_event(pin, pin_valid)?;
+        if pin_valid {
+            let pin_started = Instant::now();
+            if let Some(m) = searcher.test_pinned_first() {
+                let mut out = std::io::stdout().lock();
+                writeln!(out, "{}", match_event(&m))?;
+                let done_event = serde_json::json!({
+                    "event": "done",
+                    "mode": "pool",
+                    "prefixes_done": 0u64,
+                    "derived": searcher.progress.derived.load(Ordering::Relaxed),
+                    "elapsed_ms": pin_started.elapsed().as_millis() as u64,
+                    "matches": 1u64,
+                    "recovered": m.mnemonic.clone(),
+                });
+                writeln!(out, "{done_event}")?;
+                out.flush()?;
+                return Ok(true);
+            }
+        }
     }
 
     // Ticker thread: emits progress lines and drains matches as they appear.
@@ -374,7 +500,6 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
         let searcher = Arc::clone(&searcher);
         let done = Arc::clone(&done);
         let interval = Duration::from_millis(args.progress_ms);
-        let range_start = args.start; // Copy into the 'static ticker thread
         let mut last_derived = 0u64;
         let mut last_tick = Instant::now();
         std::thread::spawn(move || {
@@ -383,12 +508,12 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
                 std::thread::sleep(interval);
                 let newly = searcher.take_matches();
                 let derived = searcher.progress.derived.load(Ordering::Relaxed);
-                // The frontier is the highest ordinal some worker has claimed;
-                // clamped into this lane's range it names a candidate the
-                // engine is actually walking (or the lane's first ordinal
-                // before any work has started).
+                // Under the shuffled traversal `current_prefix` already holds
+                // the image ordinal a worker is actually testing: claimed
+                // ranges scatter across the whole space, so the only clamp
+                // needed is into the (always-valid) ordinal domain.
                 let raw_frontier = searcher.progress.current_prefix.load(Ordering::Relaxed);
-                let frontier = raw_frontier.clamp(range_start, end.saturating_sub(1));
+                let frontier = raw_frontier.min(total.saturating_sub(1));
                 let dt = last_tick.elapsed().as_secs_f64();
                 let rate = if dt > 0.0 {
                     (derived - last_derived) as f64 / dt
@@ -442,7 +567,7 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
     };
 
     let scan_started = Instant::now();
-    let run_matches = searcher.run_range(args.start..end);
+    let run_matches = searcher.run_range(start..end);
     let elapsed = scan_started.elapsed();
     done.store(true, Ordering::Relaxed);
     let ticker_matches = ticker.join().unwrap_or_default();
@@ -462,11 +587,225 @@ fn run(args: &Args) -> cracker_core::Result<bool> {
         let derived = searcher.progress.derived.load(Ordering::Relaxed);
         let done_event = serde_json::json!({
             "event": "done",
+            "mode": "pool",
             "prefixes_done": searcher.progress.prefixes_done.load(Ordering::Relaxed),
             "derived": derived,
             "elapsed_ms": elapsed.as_millis() as u64,
             "derived_per_sec": if total_secs > 0.0 {
                 derived as f64 / total_secs
+            } else {
+                0.0
+            },
+            "matches": all_matches.len(),
+            "recovered": all_matches.first().map(|m| m.mnemonic.clone()),
+        });
+        writeln!(out, "{done_event}")?;
+        out.flush()?;
+    }
+
+    Ok(!all_matches.is_empty())
+}
+
+/// Full-space lottery: uniform random sampling over ALL 2048^12 raw
+/// assemblies — every one of the 12 word slots is randomized, the true
+/// lottery. The run ends at its draw budget or when stopped; it never
+/// reports "exhausted" because no budget makes a dent in 2048^12 — the odds
+/// are disclosed to the user before they start. Exit 0 on a genuine match,
+/// 1 when the budget is spent without one (same convention as the pool
+/// modes; the `done` event's `mode` tells them apart).
+fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
+    let budget = args
+        .random_draws
+        .expect("dispatcher checked --random-draws");
+    let seed = run_seed(args);
+    let pin = pinned_candidate(args);
+    let mut targets = Vec::new();
+    for t in &args.targets {
+        let parsed = parse_target(t)?;
+        if !args.address_type.kinds().contains(&parsed.kind()) {
+            return Err(CrackerError::Other(format!(
+                "target {t} is not a {} address",
+                args.address_type.label()
+            )));
+        }
+        targets.push(Target {
+            kind: parsed.kind(),
+            bytes: parsed.bytes(),
+        });
+    }
+
+    if let Some(n) = args.workers {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()
+            .map_err(|e| CrackerError::Other(e.to_string()))?;
+    }
+
+    let searcher = Arc::new(LotterySearcher::new(
+        LotteryConfig {
+            targets,
+            passphrase: args.passphrase.clone(),
+            pinned_first: pin.clone(),
+        },
+        !args.exhaustive,
+    ));
+    {
+        let mut out = std::io::stdout().lock();
+        let start_event = serde_json::json!({
+            "event": "start",
+            "mode": "lottery",
+            "draw_budget": budget,
+            "seed": seed,
+            "workers": args.workers,
+            "address_type": args.address_type.label(),
+            "targets": args.targets,
+        });
+        writeln!(out, "{start_event}")?;
+        out.flush()?;
+    }
+
+    // Pinned first candidate: tested before any random sampling, labeled so
+    // the randomization boundary is visible in the tested-phrases feed. A
+    // genuine match at candidate #1 ends the run — correct for own-wallet
+    // runs, not a bug.
+    if let Some(pin) = &pin {
+        let pin_valid = cracker_core::bip39::validate(pin).is_ok();
+        emit_pinned_event(pin, pin_valid)?;
+        if pin_valid {
+            let pin_started = Instant::now();
+            if let Some(m) = searcher.test_pinned_first() {
+                let mut out = std::io::stdout().lock();
+                writeln!(out, "{}", match_event(&m))?;
+                let done_event = serde_json::json!({
+                    "event": "done",
+                    "mode": "lottery",
+                    "draws_done": 0u64,
+                    "checksum_valid": 0u64,
+                    "derived": searcher.progress.derived.load(Ordering::Relaxed),
+                    "elapsed_ms": pin_started.elapsed().as_millis() as u64,
+                    "matches": 1u64,
+                    "recovered": m.mnemonic.clone(),
+                });
+                writeln!(out, "{done_event}")?;
+                out.flush()?;
+                return Ok(true);
+            }
+        }
+    }
+
+    // Ticker thread: same contract as the pool ticker, draw-centric fields.
+    let done = Arc::new(AtomicBool::new(false));
+    let ticker = {
+        let searcher = Arc::clone(&searcher);
+        let done = Arc::clone(&done);
+        let interval = Duration::from_millis(args.progress_ms);
+        let mut last_draws = 0u64;
+        let mut last_derived = 0u64;
+        let mut last_tick = Instant::now();
+        std::thread::spawn(move || {
+            let mut drained: Vec<Match> = Vec::new();
+            while !done.load(Ordering::Relaxed) {
+                std::thread::sleep(interval);
+                let newly = searcher.take_matches();
+                let draws = searcher.progress.draws.load(Ordering::Relaxed);
+                let derived = searcher.progress.derived.load(Ordering::Relaxed);
+                let dt = last_tick.elapsed().as_secs_f64();
+                let (draw_rate, derived_rate) = if dt > 0.0 {
+                    (
+                        (draws - last_draws) as f64 / dt,
+                        (derived - last_derived) as f64 / dt,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
+                last_draws = draws;
+                last_derived = derived;
+                last_tick = Instant::now();
+                let mut ok = true;
+                {
+                    let mut out = std::io::stdout().lock();
+                    for m in &newly {
+                        if writeln!(out, "{}", match_event(m)).is_err() {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        let frontier_phrase = searcher
+                            .progress
+                            .last_phrase
+                            .lock()
+                            .expect("last_phrase mutex poisoned")
+                            .clone();
+                        // `fraction_of_space` is consumed draw budget here —
+                        // there is no space-fraction claim in lottery mode.
+                        let line = serde_json::json!({
+                            "event": "progress",
+                            "mode": "lottery",
+                            "draws_done": draws,
+                            "checksum_valid": searcher
+                                .progress
+                                .checksum_valid
+                                .load(Ordering::Relaxed),
+                            "derived": derived,
+                            "derived_per_sec": derived_rate,
+                            "draws_per_sec": draw_rate,
+                            "fraction_of_space": if budget > 0 {
+                                draws as f64 / budget as f64
+                            } else {
+                                0.0
+                            },
+                            "matches": searcher.matches_found(),
+                            "frontier_phrase": frontier_phrase,
+                        });
+                        if writeln!(out, "{line}").is_err() || out.flush().is_err() {
+                            ok = false;
+                        }
+                    }
+                }
+                drained.extend(newly);
+                if !ok {
+                    return drained; // stdout closed; tally kept for the exit code
+                }
+            }
+            drained
+        })
+    };
+
+    let scan_started = Instant::now();
+    let run_matches = searcher.run(budget, seed);
+    let elapsed = scan_started.elapsed();
+    done.store(true, Ordering::Relaxed);
+    let ticker_matches = ticker.join().unwrap_or_default();
+    let final_matches = searcher.take_matches();
+
+    let all_matches = run_matches
+        .into_iter()
+        .chain(ticker_matches)
+        .chain(final_matches)
+        .collect::<Vec<_>>();
+    let total_secs = elapsed.as_secs_f64();
+    {
+        let mut out = std::io::stdout().lock();
+        for m in &all_matches {
+            writeln!(out, "{}", match_event(m))?;
+        }
+        let draws = searcher.progress.draws.load(Ordering::Relaxed);
+        let derived = searcher.progress.derived.load(Ordering::Relaxed);
+        let done_event = serde_json::json!({
+            "event": "done",
+            "mode": "lottery",
+            "draws_done": draws,
+            "checksum_valid": searcher.progress.checksum_valid.load(Ordering::Relaxed),
+            "derived": derived,
+            "elapsed_ms": elapsed.as_millis() as u64,
+            "derived_per_sec": if total_secs > 0.0 {
+                derived as f64 / total_secs
+            } else {
+                0.0
+            },
+            "draws_per_sec": if total_secs > 0.0 {
+                draws as f64 / total_secs
             } else {
                 0.0
             },

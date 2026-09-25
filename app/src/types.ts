@@ -117,6 +117,13 @@ export interface RunReport {
   quantum: unknown | null;
   /** Set when the run's target was derived from a user-supplied seed phrase. */
   customWallet?: CustomWalletProvenance | null;
+  /**
+   * How the run traverses its space: bounded = shuffled exhaustive coverage
+   * (finishable, ETA disclosed), lottery = uniform random sampling of the
+   * full 2^128 checksum-valid phrase space (no finishability claim).
+   * Mirrors api/src/types.ts.
+   */
+  searchKind?: "bounded" | "lottery";
 }
 
 /** WS messages the API broadcasts (GET /ws). */
@@ -125,7 +132,13 @@ export type ServerMessage =
   | { type: "match"; runId: string; match: MatchInfo; workerId: number }
   | { type: "done"; runId: string; status: RunStatus; report: RunReport }
   | { type: "quantum_result"; runId: string; payload: unknown }
-  | { type: "error"; runId: string | null; message: string };
+  | { type: "error"; runId: string | null; message: string }
+  /**
+   * The pinned first candidate was tested before any traversal/sampling
+   * ("pinned — not random"). `tested: false` means the phrase failed
+   * BIP-39 validation and was skipped, never silently remapped.
+   */
+  | { type: "pinned"; runId: string; phrase: string; label: string; tested: boolean };
 
 // ── GET /system ─────────────────────────────────────────────────────────────
 

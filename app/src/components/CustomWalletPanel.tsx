@@ -228,6 +228,12 @@ export function CustomWalletPanel({
       {error !== null && <p className="verdict bad">{error}</p>}
       {derived !== null && (
         <div className="derive-preview">
+          <p className="note">
+            Both addresses come from the <strong>same phrase</strong> — one
+            12-word phrase deterministically derives every chain (ETH at
+            m/44'/60'/0'/0/0, BTC P2PKH at m/44'/0'/0'/0/0). The run targets
+            the row marked “→ target”.
+          </p>
           <div className="kv">
             <DeriveRow
               label="derived Ethereum address"
@@ -245,10 +251,12 @@ export function CustomWalletPanel({
           {canVary ? (
             <>
               <p className="note">
-                Mark words the run may <strong>vary over the full
-                2,048-word BIP-39 list</strong> — every unmarked word stays
-                fixed, so the disclosed space stays finishable while still
-                containing your real phrase by construction.
+                Optional — mark words the run may <strong>vary over the full
+                2,048-word BIP-39 list</strong> (below). Marking is the only
+                configuration that can <strong>guarantee</strong> finding your
+                own phrase: the sweep then contains it by construction, and
+                every freed word shrinks the odds. With nothing marked, a run
+                is the full-space lottery described underneath.
               </p>
               <div className="vary-chips" role="group" aria-label="Words the run may vary">
                 {words.map((word, index) => {
@@ -279,7 +287,9 @@ export function CustomWalletPanel({
                     ✓ Disclosed limited keyspace: {formatCount(space.rawAssemblies)}{" "}
                     raw assemblies (~{formatCount(space.estimatedChecksumValid)}{" "}
                     checksum-valid candidates). Your true phrase is inside this
-                    space by construction — a genuine match is reachable.
+                    space by construction — a genuine match is reachable, and a
+                    full sweep visits every candidate exactly once in random
+                    order.
                   </p>
                   <p className="note">
                     Estimated full sweep at the current worker setting:{" "}
@@ -290,32 +300,53 @@ export function CustomWalletPanel({
                 </div>
               ) : (
                 <p className="note">
-                  No words marked to vary — the run searches the bounded pooled
-                  demo space instead.
+                  No words marked — pressing Start runs the full-space lottery
+                  (odds below), not a bounded sweep.
                 </p>
               )}
             </>
           ) : (
             <p className="note">
-              Limited-keyspace varying supports 12-word phrases; this phrase has{" "}
-              {words.length} words, so the run uses the bounded pooled demo space.
+              Marked-slot sweeping supports 12-word phrases; this phrase has{" "}
+              {words.length} words. The lottery below samples 12-word phrases,
+              so it cannot genuinely derive this address — for it, a run is a
+              demonstration of scale only.
             </p>
           )}
-          {varySlots.length === 0 &&
-            (derived.poolMembership.inSpace ? (
+          {canVary && (
+            <div className="keyspace-disclosure">
               <p className="verdict ok">
-                ✓ This phrase is inside the bounded pooled demo keyspace — the run
-                can genuinely recover it.
+                ✓ Full-space lottery (the default run): every draw picks all 12
+                words uniformly at random and keeps only checksum-valid
+                phrases — 2^128 ≈ 3.4×10^38 valid phrases (2048^12 ≈
+                5.4×10^39 raw assemblies before checksum filtering). At
+                ~1,400 draws/s the odds of your exact phrase are about 1 in
+                6.7×10^31 per hour — the expected wait is ~10^28 years, many
+                times the age of the universe. That is the honest
+                demonstration of why real wallets are safe.
               </p>
-            ) : (
-              <p className="verdict bad">
-                ⚠ This wallet's address is OUTSIDE the bounded pooled demo
-                keyspace — the run will stay bounded and end exhausted without a
-                match. That is the honest demonstration of keyspace scale, not a
-                failure of your wallet. Mark words to vary above to search a
-                limited space that does contain your phrase.
+              <p className="note">
+                Your phrase is pinned as the first candidate, labeled “pinned —
+                not random”, before any sampling starts — a reproducible
+                benchmark anchor. If it genuinely derives your address, the run
+                reports a real match at candidate #1 and ends — that is correct
+                behavior, not a bug.
               </p>
-            ))}
+              <p className="note">
+                Marking 1–2 slots (above) is the maximum-likelihood
+                configuration and the only one that can guarantee finding your
+                own phrase: 1 marked slot ≈ 2,048 candidates (seconds); 2 slots
+                ≈ 4.2 million (~50 minutes at ~1,400 draws/s). Every freed word
+                shrinks the per-hour odds.
+              </p>
+              <p className="note muted">
+                Pool membership (informational):{" "}
+                {derived.poolMembership.inSpace ? "inside" : "outside"} the
+                bounded pooled demo keyspace — the lottery and marked-slot
+                searches do not depend on it.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </section>

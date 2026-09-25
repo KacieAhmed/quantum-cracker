@@ -428,11 +428,19 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
         },
       });
       expect(started.statusCode).toBe(201);
-      const { runId, customWallet, targetNote } = started.json();
+      const { runId, customWallet, note, poolMembershipNote: membershipNote, searchKind } = started.json();
       expect(customWallet.targetSource).toBe("derived-from-mnemonic");
       expect(customWallet.crossCheckUsed).toBe(false);
       expect(customWallet.inPooledSpace).toBe(false);
-      expect(targetNote).toContain("OUTSIDE the bounded pooled demo keyspace");
+      // No marked slots → the own-wallet default is the full-space lottery,
+      // with the honest odds disclosed in the response (not a dead end).
+      expect(searchKind).toBe("lottery");
+      expect(note).toContain("Full-space lottery");
+      expect(note).toContain("2^128 ≈ 3.4×10^38 valid phrases");
+      expect(note).toContain("pinned — not random");
+      // Pool membership is neutral info now, never a guaranteed-dead-end verdict.
+      expect(membershipNote).toContain("informational");
+      expect(membershipNote).not.toContain("OUTSIDE the bounded pooled demo keyspace");
 
       const report = await waitForFinal(app, runId);
       // The run chased the DERIVED address, not POOLED_ETH, and exhausted.
@@ -474,7 +482,10 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
       });
       expect(started.statusCode).toBe(201);
       expect(started.json().customWallet.crossCheckUsed).toBe(true);
-      expect(started.json().targetNote).toContain("can genuinely match it");
+      // In-space or not, an unmarked own-wallet run is the full-space lottery
+      // (the bounded copy only appears on marked-slot sweeps).
+      expect(started.json().searchKind).toBe("lottery");
+      expect(started.json().note).toContain("Full-space lottery");
 
       const doneMsg = await nextMatching((m) => m.type === "done");
       if (doneMsg.type !== "done") throw new Error("unreachable");

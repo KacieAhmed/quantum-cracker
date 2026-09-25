@@ -110,11 +110,22 @@ impl PoolSearch {
         }
         pool.sort_unstable();
         pool.dedup();
-        Ok(Self {
+        let compiled = Self {
             slots,
             pool,
             passphrase: passphrase.to_string(),
-        })
+        };
+        // Reject spaces whose ordinal arithmetic cannot be represented: a
+        // saturating count would silently under-report the keyspace a run
+        // promises to cover.
+        let prefixes = compiled.total_prefixes();
+        let pool_len = compiled.pool.len() as u64;
+        if pool_len == 0 || prefixes == 0 || prefixes > u64::MAX / pool_len {
+            return Err(bad_pool(
+                "keyspace too large: prefix × pool-word count overflows u64",
+            ));
+        }
+        Ok(compiled)
     }
 
     /// Positions (0-indexed) among the first 11 words that vary over the pool.
@@ -371,6 +382,92 @@ mod tests {
         assert!(!pool.contains_mnemonic(
             "ocean abstract raven accident hill absent winter abstract candy abuse mango able extra"
         ));
+    }
+
+    /// A pool_config that varies `vary_first11` of the first 11 slots over the
+    /// full BIP-39 list — the shape the limited-keyspace mode builds.
+    fn full_list_config(vary_first11: usize, vary_twelfth: bool) -> PoolConfigJson {
+        let full: Vec<String> = (0..crate::bip39::word_count())
+            .filter_map(|i| crate::bip39::word(i).map(String::from))
+            .collect();
+        let mut variable: Vec<u8> = (1..=11).take(vary_first11).map(|p| p as u8).collect();
+        if vary_twelfth {
+            variable.push(12);
+        }
+        let mut fixed = BTreeMap::new();
+        let sample = |p: usize| -> String {
+            crate::bip39::word((p * 7) % crate::bip39::word_count())
+                .unwrap()
+                .to_string()
+        };
+        for p in 1..=12 {
+            if !variable.contains(&(p as u8)) {
+                fixed.insert(p.to_string(), sample(p));
+            }
+        }
+        PoolConfigJson {
+            pool_words: full,
+            variable_positions: variable,
+            fixed_words: fixed,
+        }
+    }
+
+    #[test]
+    fn full_wordlist_template_spaces_follow_the_documented_counts() {
+        // 4 varied slots among the first 11: 2048^4 prefixes, 2048^5 raw.
+        let pool = PoolSearch::from_config(&full_list_config(4, false), "").unwrap();
+        assert_eq!(pool.total_prefixes(), 2_048u64.pow(4));
+        assert_eq!(pool.raw_candidates(), 2_048u64.pow(5));
+
+        // The twelfth word varying folds into the pool sweep: 3 prefix slots.
+        let pool = PoolSearch::from_config(&full_list_config(3, true), "").unwrap();
+        assert_eq!(pool.total_prefixes(), 2_048u64.pow(3));
+        assert_eq!(pool.raw_candidates(), 2_048u64.pow(4));
+    }
+
+    #[test]
+    fn template_space_that_overflows_u64_is_rejected() {
+        // 5 varied prefix slots over the full list: raw assemblies 2048^6
+        // (~7.4e19) exceed u64::MAX and must be rejected outright.
+        assert!(PoolSearch::from_config(&full_list_config(5, false), "").is_err());
+        assert!(PoolSearch::from_config(&full_list_config(5, true), "").is_err());
+        // 4 varied prefix slots + the twelfth: raw 2048^5 (~3.6e16) still fits
+        // and must be accepted.
+        let pool = PoolSearch::from_config(&full_list_config(4, true), "").unwrap();
+        assert_eq!(pool.total_prefixes(), 2_048u64.pow(4));
+        assert_eq!(pool.raw_candidates(), 2_048u64.pow(5));
+    }
+
+    #[test]
+    fn full_list_template_contains_its_own_phrase_by_construction() {
+        let cfg = full_list_config(2, false);
+        // Varying slots get arbitrary list words; every other slot is fixed.
+        // With the twelfth word fixed the checksum can only be satisfied by
+        // sweeping a VARYING slot — sweep slot 2 for a checksum-valid value.
+        let mut indices = [0u16; 12];
+        for p in 1..=12 {
+            if !cfg.variable_positions.contains(&(p as u8)) {
+                indices[p - 1] = crate::bip39::word_index(cfg.fixed_words[&p.to_string()].as_str())
+                    .unwrap() as u16;
+            }
+        }
+        let mut checksum_ok = false;
+        for idx in 0..crate::bip39::word_count() {
+            indices[1] = idx as u16; // slot 2 varies over the full list
+            if crate::bip39::validate_indices(&indices) {
+                checksum_ok = true;
+                break;
+            }
+        }
+        assert!(
+            checksum_ok,
+            "sweeping a varying slot must find a checksum word"
+        );
+        let phrase = crate::bip39::mnemonic_from_indices(&indices).unwrap();
+        let pool = PoolSearch::from_config(&cfg, "").unwrap();
+        // Enumeration provably reaches this phrase: the limited-keyspace
+        // containment guarantee.
+        assert!(pool.contains_mnemonic(&phrase));
     }
 
     #[test]

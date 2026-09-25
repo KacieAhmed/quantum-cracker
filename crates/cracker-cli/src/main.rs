@@ -101,6 +101,12 @@ struct Args {
     #[arg(long)]
     validate_only: bool,
 
+    /// Print the engine's embedded BIP-39 English wordlist as JSON
+    /// ({"words": [...]}) and exit. Single source of truth for callers that
+    /// assemble their own limited-keyspace pool configs.
+    #[arg(long)]
+    list_wordlist: bool,
+
     /// Derive every supported address from this BIP-39 mnemonic (the same
     /// derive::derive_addresses path the search engine runs per candidate)
     /// and print one JSON object: addresses, BIP-32 paths, and whether the
@@ -118,6 +124,13 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    if args.list_wordlist {
+        let words: Vec<&str> = (0..cracker_core::bip39::word_count())
+            .filter_map(cracker_core::bip39::word)
+            .collect();
+        println!("{}", serde_json::json!({ "words": words }));
+        return;
+    }
     if args.list_targets {
         match list_targets() {
             Ok(json) => println!("{json}"),

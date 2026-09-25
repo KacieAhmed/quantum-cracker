@@ -31,6 +31,7 @@ pub mod error;
 pub mod keys;
 pub mod pool;
 pub mod preseed;
+pub mod rawkey;
 pub mod sampler;
 pub mod seed;
 pub mod traversal;
@@ -44,6 +45,10 @@ pub use preseed::{
     discovery_for_scalar, draw_scalar, P2pkWatchlist, PreSeedConfig, PreSeedDiscovery,
     PreSeedProgress, PreSeedSearcher, WatchlistExpectation, ASSET_PATOSHI_KEYS, ASSET_SHA256_HEX,
     ASSET_UNIQUE_KEYS, PRODUCTION_EXPECTATION,
+};
+pub use rawkey::{
+    parse_private_key, raw_key_proof, wif_decode, MatchedPath, RawKeyForm, RawKeyProof,
+    RawPrivateKey,
 };
 pub use sampler::{LotteryConfig, LotteryProgress, LotterySearcher};
 pub use validate::TargetAddr;

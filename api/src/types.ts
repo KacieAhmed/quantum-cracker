@@ -123,8 +123,7 @@ export type RunStatus =
   | "exhausted"
   | "budget-reached"
   | "cancelled"
-  | "error"
-  | "quantum_demo";
+  | "error";
 
 export interface Aggregate {
   derived: number;
@@ -149,7 +148,6 @@ export interface RunReport {
   elapsedMs: number | null;
   aggregate: Aggregate | null;
   match: MatchInfo | null;
-  quantum: unknown | null;
   /** Set when the run's target was derived from a user-supplied seed phrase. */
   customWallet: CustomWalletProvenance | null;
   /**
@@ -168,7 +166,6 @@ export type ServerMessage =
   | { type: "snapshot"; report: RunReport }
   | { type: "match"; runId: string; match: MatchInfo; workerId: number }
   | { type: "done"; runId: string; status: RunStatus; report: RunReport }
-  | { type: "quantum_result"; runId: string; payload: unknown }
   | { type: "error"; runId: string | null; message: string }
   /**
    * The pinned first candidate was tested before any traversal/sampling

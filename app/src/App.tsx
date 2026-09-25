@@ -18,7 +18,7 @@ import { Header } from "./components/Header";
 import { AddressPanel } from "./components/AddressPanel";
 import { CustomWalletPanel } from "./components/CustomWalletPanel";
 import { WorkerSlider } from "./components/WorkerSlider";
-import { QuantumConfig } from "./components/QuantumConfig";
+import { QuantumPanel } from "./components/QuantumPanel";
 import { StatsBar } from "./components/StatsBar";
 import { LaneGrid } from "./components/LaneGrid";
 import { Ticker } from "./components/Ticker";
@@ -26,7 +26,6 @@ import { ResultPanel } from "./components/ResultPanel";
 import { Infeasibility } from "./components/Infeasibility";
 
 const DEFAULT_WORKERS = 8;
-const QUANTUM_BITS_MAX = 16;
 
 /** Live WS feed folded into UI state; capped auto-reconnect with backoff. */
 function useRunFeed(): RunUiState {
@@ -83,7 +82,6 @@ export default function App() {
   const [corpusError, setCorpusError] = useState<string | null>(null);
   const [workers, setWorkers] = useState<number>(DEFAULT_WORKERS);
   const [force, setForce] = useState(false);
-  const [quantumBits, setQuantumBits] = useState(8);
   const [startError, setStartError] = useState<string | null>(null);
   const [tickerPhrases, setTickerPhrases] = useState<string[]>([]);
   const [walletMode, setWalletMode] = useState(false);
@@ -161,9 +159,11 @@ export default function App() {
   }, [address]);
 
   // Ticker: accumulate frontier phrases per snapshot, reset on a new run.
+  // Both modes stream a candidate feed now — quantum's classical leg is the
+  // same lottery, so its feed renders here too.
   const lastRunIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!report || report.mode !== "classic") return;
+    if (!report) return;
     if (lastRunIdRef.current !== report.runId) {
       lastRunIdRef.current = report.runId;
       setTickerPhrases([]);
@@ -208,24 +208,30 @@ export default function App() {
             ...(customWallet.expectedAddress === ""
               ? {}
               : { expectedAddress: customWallet.expectedAddress }),
-            ...(customWallet.varySlots.length === 0
-              ? {}
-              : { varySlots: customWallet.varySlots }),
+            // Marked slots only apply in classic mode; quantum runs the
+            // all-words-random lottery, so stale marks are never sent.
+            ...(mode === "classic" && customWallet.varySlots.length > 0
+              ? { varySlots: customWallet.varySlots }
+              : {}),
           },
-          ...(mode === "classic"
-            ? { workers, force }
-            : { quantumBits: Math.min(quantumBits, QUANTUM_BITS_MAX) }),
+          workers,
+          force,
         });
       } else {
         await startCrack({
           chain,
           mode,
           address: address.trim(),
-          // Address-only classic run = the full-space lottery. The odds are
-          // disclosed right above the start button (LOTTERY_ODDS_NOTE);
-          // sending probe:true is the user's informed consent to them. The
-          // server refuses to start without it.
-          ...(mode === "classic" ? { probe: true } : { quantumBits: Math.min(quantumBits, QUANTUM_BITS_MAX) }),
+          // Address-only run (classic or quantum) = the full-space lottery.
+          // The odds are disclosed right above the start button
+          // (LOTTERY_ODDS_NOTE / the quantum panel's disclosure); sending
+          // probe:true is the user's informed consent to them. The server
+          // refuses to start without it. Quantum mode sends no bits: its
+          // classical leg is this same lottery, and the quantum math is the
+          // extrapolation panel only.
+          probe: true,
+          workers,
+          force,
         });
       }
       // A fresh run: clear stale outcome cards and the ticker.
@@ -296,6 +302,7 @@ export default function App() {
             <CustomWalletPanel
               chain={chain}
               onChain={setChain}
+              mode={mode}
               disabled={running}
               estimatedRate={estimatedRate}
               onDerived={setCustomWallet}
@@ -340,11 +347,13 @@ export default function App() {
               />
             )
           ) : (
-            <QuantumConfig
-              bits={quantumBits}
-              onBits={setQuantumBits}
-              maxBits={QUANTUM_BITS_MAX}
-              disabled={running}
+            // The quantum panel is analytic-only — there is nothing to
+            // configure. The classical leg beside it uses the same worker
+            // setting and lottery the classic modes run.
+            <QuantumPanel
+              pinnedIsUserPhrase={
+                walletMode && customWallet !== null && customWallet.derived !== null
+              }
             />
           )}
         </div>
@@ -356,13 +365,13 @@ export default function App() {
         )}
         <div className="start-row">
           <button type="button" className="btn primary" onClick={start} disabled={!canStart}>
-            {walletMode
-              ? mode === "classic"
+            {mode === "quantum"
+              ? walletMode
+                ? "Run lottery on MY wallet"
+                : "Start full-space lottery"
+              : walletMode
                 ? "Search for MY wallet"
-                : "Run toy simulation on MY wallet"
-              : mode === "classic"
-                ? "Start search"
-                : "Run toy simulation"}
+                : "Start search"}
           </button>
           {running && (
             <button type="button" className="btn danger" onClick={cancel}>
@@ -387,14 +396,12 @@ export default function App() {
               eta={lotteryRun ? null : (aggregate?.etaSeconds ?? null)}
               measured={aggregate !== null}
             />
-            {report.mode === "classic" && <LaneGrid lanes={report.lanes} />}
-            {report.mode === "classic" && (
-              <Ticker
-                phrases={tickerPhrases}
-                matched={report.status === "matched"}
-                pinned={pinnedEntry}
-              />
-            )}
+            <LaneGrid lanes={report.lanes} />
+            <Ticker
+              phrases={tickerPhrases}
+              matched={report.status === "matched"}
+              pinned={pinnedEntry}
+            />
           </>
         )}
 

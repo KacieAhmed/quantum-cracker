@@ -39,7 +39,10 @@ describe("api client request shapes", () => {
     stubFetch(201, {
       runId: "run_y",
       mode: "quantum",
-      totalCandidates: 256,
+      searchKind: "lottery",
+      drawBudget: 11_200,
+      seed: "run_y",
+      totalCandidates: 340282366920938463463374607431768211456,
       note: "n",
     });
 
@@ -47,7 +50,7 @@ describe("api client request shapes", () => {
       chain: "bitcoin",
       mode: "quantum",
       address: "16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp",
-      quantumBits: 8,
+      workers: 8,
     });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -57,7 +60,7 @@ describe("api client request shapes", () => {
         chain: "bitcoin",
         mode: "quantum",
         address: "16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp",
-        quantumBits: 8,
+        workers: 8,
       }),
     );
   });

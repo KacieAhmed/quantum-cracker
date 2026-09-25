@@ -39,6 +39,7 @@ describe("input hygiene on phrase/address inputs", () => {
       <CustomWalletPanel
         chain="bitcoin"
         onChain={() => {}}
+        mode="classic"
         disabled={false}
         estimatedRate={null}
         onDerived={() => {}}

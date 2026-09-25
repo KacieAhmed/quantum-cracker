@@ -10,7 +10,6 @@ export interface RunUiState {
   match: { runId: string; match: MatchInfo; workerId: number } | null;
   /** Last terminal `done` event (status + runId). */
   lastDone: { runId: string; status: RunStatus } | null;
-  quantumPayload: unknown | null;
   socketError: string | null;
   /**
    * The pinned first candidate (tested before any random sampling), for the
@@ -25,7 +24,6 @@ export const emptyRunUiState: RunUiState = {
   report: null,
   match: null,
   lastDone: null,
-  quantumPayload: null,
   socketError: null,
   pinnedEntry: null,
 };
@@ -70,8 +68,6 @@ export function foldMessage(state: RunUiState, msg: ServerMessage): RunUiState {
         report: msg.report,
         lastDone: { runId: msg.runId, status: msg.status },
       };
-    case "quantum_result":
-      return { ...state, quantumPayload: msg.payload };
     case "error":
       return { ...state, socketError: msg.message };
   }

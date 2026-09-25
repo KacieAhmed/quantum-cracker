@@ -36,7 +36,6 @@ function resolveStaticDir(): string | undefined {
 const app = await buildApp({
   cliPath: resolveCliPath(),
   runsDir: path.join(repoRoot, "api", "runs"),
-  groverSrcDir: path.join(repoRoot, "quantum", "grover", "src"),
   staticDir: resolveStaticDir(),
 });
 

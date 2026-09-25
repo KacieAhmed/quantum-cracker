@@ -741,32 +741,28 @@ export async function buildApp(
         // as own-wallet mode, no bounded corpus sweep exists on this path.
         // The probe flag is the user's consent to the disclosed odds; any
         // valid address is a legitimate lottery target (rich-list quick
-        // picks included), corpus member or not — there is no membership
-        // gate left on this path. Quantum mode is exempt: the toy Grover
-        // simulation never searches the address space, so there are no odds
-        // to consent to (and probe+quantum is rejected below anyway).
-        if (body.mode === "classic") {
-          if (body.probe !== true) {
-            return reply.code(422).send({
-              error:
-                'address-only runs are a full-space lottery over every checksum-valid 12-word phrase (2^128 ≈ 3.4×10^38) — resend with "probe": true to accept the disclosed odds, or supply customWallet to derive the target from your own seed phrase',
-            });
-          }
-          addressOnlyBudget = Math.min(
-            body.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
-            LOTTERY_DRAWS_MAX,
-          );
-          addressOnlySeed = newSeed();
-          const wl = await ensureWatchlist();
-          probe = {
-            targetSource: "addressOnly",
-            searchedSpace: "all-checksum-valid-12-word-bip39-phrases",
-            searchedRawCandidates: null,
-            searchedChecksumValid: null,
-            declaredSpaceSearched: false,
-            disclosure: addressOnlyDisclosure(addressOnlyBudget, wl.size),
-          };
+        // picks included), corpus member or not. Quantum mode runs the same
+        // lottery as its classical leg, so the same consent applies.
+        if (body.probe !== true) {
+          return reply.code(422).send({
+            error:
+              'address-only runs are a full-space lottery over every checksum-valid 12-word phrase (2^128 ≈ 3.4×10^38) — resend with "probe": true to accept the disclosed odds, or supply customWallet to derive the target from your own seed phrase',
+          });
         }
+        addressOnlyBudget = Math.min(
+          body.drawBudget ?? LOTTERY_DRAWS_DEFAULT,
+          LOTTERY_DRAWS_MAX,
+        );
+        addressOnlySeed = newSeed();
+        const wl = await ensureWatchlist();
+        probe = {
+          targetSource: "addressOnly",
+          searchedSpace: "all-checksum-valid-12-word-bip39-phrases",
+          searchedRawCandidates: null,
+          searchedChecksumValid: null,
+          declaredSpaceSearched: false,
+          disclosure: addressOnlyDisclosure(addressOnlyBudget, wl.size),
+        };
       }
 
       // Address-only lotteries (classic or quantum — the classical legs are
@@ -798,7 +794,10 @@ export async function buildApp(
           drawBudget: addressOnlyBudget ?? LOTTERY_DRAWS_DEFAULT,
           seed: addressOnlySeed,
           totalCandidates: report.totalCandidates,
-          note: lotteryNote(false, wl.size),
+          note:
+            body.mode === "quantum"
+              ? `${lotteryNote(false, wl.size)} ${QUANTUM_MODE_NOTE}`
+              : lotteryNote(false, wl.size),
           probe,
           targetNote: probe.disclosure,
         });

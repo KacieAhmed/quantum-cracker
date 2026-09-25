@@ -271,6 +271,7 @@ describe("api server", () => {
           mode: "quantum",
           address: POOLED_ETH,
           workers: 1,
+          probe: true,
         },
       });
       expect(res.statusCode).toBe(201);
@@ -294,7 +295,7 @@ describe("api server", () => {
       const doneMsg = await nextMatching((m) => m.type === "done");
       if (doneMsg.type !== "done") throw new Error("unreachable");
       // Budget end — a coverage-bounded end state, never an exhaustion claim.
-      expect(doneMsg.report.status).toBe("budget_spent");
+      expect(doneMsg.report.status).toBe("budget-reached");
       expect(doneMsg.report.mode).toBe("quantum");
       expect(doneMsg.report.match).toBeNull();
       ws.close();
@@ -797,7 +798,7 @@ describe("address-only full-space lottery", () => {
     }
   });
 
-  it("refuses probe in quantum mode — the toy sim is a separate demo", async () => {
+  it("runs a probe quantum run as the same consented lottery, labeled quantum", async () => {
     const { app } = await makeApp();
     try {
       const started = await app.inject({
@@ -811,8 +812,15 @@ describe("address-only full-space lottery", () => {
           probe: true,
         },
       });
-      expect(started.statusCode).toBe(422);
-      expect(started.json().error).toContain("classical full-space search");
+      // Quantum mode's classical leg IS the address-only full-space lottery:
+      // same consent (probe), same calibration pin, same budget semantics —
+      // only the mode label and the quantum scope note differ.
+      expect(started.statusCode).toBe(201);
+      const body = started.json();
+      expect(body.mode).toBe("quantum");
+      expect(body.searchKind).toBe("lottery");
+      expect(body.probe).toBeDefined();
+      expect(body.note).toContain("Quantum mode");
     } finally {
       await app.close();
     }
@@ -1150,6 +1158,7 @@ describe("cancel across run states", () => {
           mode: "quantum",
           address: POOLED_ETH,
           workers: 1,
+          probe: true,
         },
       });
       expect(started.statusCode).toBe(201);

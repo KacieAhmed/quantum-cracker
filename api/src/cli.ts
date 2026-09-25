@@ -89,6 +89,36 @@ export class MnemonicError extends Error {
   }
 }
 
+/** Output of cracker-cli --derive-privkey (one JSON object, snake_case).
+ * Mirrors cracker_core::rawkey::RawKeyProof. */
+export interface RawKeyProofRaw {
+  input_form: "hex" | "wif";
+  input_wif: string | null;
+  wif_compressed: string;
+  wif_uncompressed: string;
+  private_key_hex: string;
+  pubkey_compressed_hex: string;
+  pubkey_uncompressed_hex: string;
+  address_p2pkh_compressed: string;
+  address_p2pkh_uncompressed: string;
+  address_eth: string;
+  expected_address: string | null;
+  matched_path:
+    | "eth"
+    | "btc-p2pkh-compressed"
+    | "btc-p2pkh-uncompressed"
+    | null;
+}
+
+/** The engine rejected the private key (bad hex, bad WIF checksum, out-of-
+ * range scalar) — 422 material, same discipline as MnemonicError. */
+export class PrivateKeyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PrivateKeyError";
+  }
+}
+
 export interface TargetVerdict {
   target: string;
   valid: boolean;
@@ -364,6 +394,37 @@ export async function deriveMnemonic(
   const parsed = JSON.parse(line) as MnemonicDerivation & { error?: string };
   if (typeof parsed.error === "string" && parsed.error.length > 0) {
     throw new MnemonicError(parsed.error);
+  }
+  return parsed;
+}
+
+/**
+ * Derive every engine-supported address from a raw private key the user
+ * already holds (the own-wallet proof for pre-BIP-39 wallets) — the same
+ * scalar/encoding primitives the search engine runs per candidate, so the
+ * proof shows exactly what a match would be compared against. Optionally
+ * carries an expected address for the engine's exact-match verdict.
+ * Throws PrivateKeyError (422 material) when the engine rejects the key
+ * or the expected address.
+ */
+export async function derivePrivKey(
+  cliPath: string,
+  privateKey: string,
+  expectedAddress?: string,
+  timeoutMs = 15_000,
+): Promise<RawKeyProofRaw> {
+  const args = ["--derive-privkey", privateKey];
+  if (expectedAddress !== undefined && expectedAddress.trim().length > 0) {
+    args.push("--expect-address", expectedAddress.trim());
+  }
+  const { stdout } = await runCapture(cliPath, args, timeoutMs);
+  const line = stdout.split("\n").find((l) => l.trim().length > 0);
+  if (line === undefined) {
+    throw new Error("engine returned no derivation output");
+  }
+  const parsed = JSON.parse(line) as RawKeyProofRaw & { error?: string };
+  if (typeof parsed.error === "string" && parsed.error.length > 0) {
+    throw new PrivateKeyError(parsed.error);
   }
   return parsed;
 }

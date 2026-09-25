@@ -10,6 +10,7 @@ import type {
   Mode,
   PreSeedDiscoveryInfo,
   ProbeProvenance,
+  RawKeyProofInfo,
   RunReport,
   RunStatus,
   ServerMessage,
@@ -341,6 +342,76 @@ export class RunManager {
     this.broadcastSnapshot();
     return report;
   }
+
+  /**
+   * Raw private-key derivation proof (own-wallet flow, pre-BIP-39 wallets):
+   * no lane ever spawns — the derivation chain was already computed by the
+   * engine before this call, and the proof payload rides the standard report
+   * (the same slot preseedDiscovery uses). Settles immediately with the
+   * standard snapshot→done event pair; status "proven" with the match/no-
+   * match verdict carried inside rawKeyProof.matchedPath, so the match
+   * union and phrase-match semantics stay untouched.
+   */
+  startRawKeyProof(
+    params: { runId: string; proof: RawKeyProofInfo },
+    broadcast: Broadcast,
+  ): RunReport {
+    if (this.active) throw new Error("a run is already active");
+    const report = newReport({
+      runId: params.runId,
+      // Inapplicable: a proof always derives BOTH chains' addresses from the
+      // one scalar; no chain toggle exists on this path.
+      chain: "bitcoin",
+      mode: "classic",
+      // No search target: the proof compares, never searches.
+      address: "",
+      workersRequested: 0,
+      totalCandidates: 0,
+      rawCandidates: 0,
+      lanes: [],
+      customWallet: null,
+      probe: null,
+    });
+    report.searchKind = "proof";
+    report.rawKeyProof = params.proof;
+    report.startedAt = new Date().toISOString();
+    report.finishedAt = report.startedAt;
+    report.elapsedMs = 0;
+    // Settled before the first broadcast: a proof never runs, so the report
+    // is born terminal (the same state settle() gives searched runs).
+    report.status = "proven";
+    report.aggregate = {
+      derived: 0,
+      derivedPerSec: 0,
+      fractionOfKeyspace: 0,
+      etaSeconds: null,
+      matches: params.proof.matchedPath !== null ? 1 : 0,
+    };
+    const run: ActiveRun = {
+      report,
+      startedAtMs: Date.now(),
+      procs: new Map(),
+      status: "proven",
+      match: null,
+      firstMatchWorker: null,
+      errorMessage: null,
+      broadcastTimer: null,
+      broadcast,
+      onSettled: null,
+    };
+    this.active = run;
+    run.broadcast({ type: "snapshot", report });
+    this.active = null;
+    void this.writeReport(report);
+    run.broadcast({
+      type: "done",
+      runId: report.runId,
+      status: report.status,
+      report,
+    });
+    return report;
+  }
+
   cancel(): boolean {
     const run = this.active;
     if (!run || run.status !== "running") return false;
@@ -628,6 +699,7 @@ function newReport(args: {
     elapsedMs: null,
     aggregate: null,
     match: null,
+    rawKeyProof: null,
     preseedDiscovery: null,
     customWallet: args.customWallet,
     probe: args.probe,

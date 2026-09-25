@@ -208,26 +208,39 @@ export default function App() {
           mode: "preseed",
           probe: true,
         });
-      } else if (walletMode && customWallet !== null && customWallet.derived !== null) {
+      } else if (
+        walletMode &&
+        customWallet !== null &&
+        (customWallet.entryMode === "raw"
+          ? customWallet.privateKey !== ""
+          : customWallet.derived !== null)
+      ) {
         await startCrack({
           chain,
           mode,
           // The derived address is the only target; a typed address is only
           // a cross-check, and no freeform address is ever sent. Marked words
           // switch the run to the limited-keyspace space that contains the
-          // phrase by construction.
-          customWallet: {
-            mnemonic: customWallet.mnemonic,
-            passphrase: customWallet.passphrase,
-            ...(customWallet.expectedAddress === ""
-              ? {}
-              : { expectedAddress: customWallet.expectedAddress }),
-            // Marked slots only apply in classic mode; quantum runs the
-            // all-words-random lottery, so stale marks are never sent.
-            ...(mode === "classic" && customWallet.varySlots.length > 0
-              ? { varySlots: customWallet.varySlots }
-              : {}),
-          },
+          // phrase by construction. Raw-key mode sends the key itself: the
+          // run is a one-shot derivation proof, not a search.
+          customWallet:
+            customWallet.entryMode === "raw"
+              ? {
+                  privateKey: customWallet.privateKey,
+                  ...(customWallet.expectedAddress === ""
+                    ? {}
+                    : { expectedAddress: customWallet.expectedAddress }),
+                }
+              : {
+                  mnemonic: customWallet.mnemonic,
+                  passphrase: customWallet.passphrase,
+                  ...(customWallet.expectedAddress === ""
+                    ? {}
+                    : { expectedAddress: customWallet.expectedAddress }),
+                  ...(mode === "classic" && customWallet.varySlots.length > 0
+                    ? { varySlots: customWallet.varySlots }
+                    : {}),
+                },
           workers,
           force,
         });
@@ -280,7 +293,10 @@ export default function App() {
     !running && systemError === null && (preseedMode
       ? chain === "bitcoin"
       : walletMode
-        ? customWallet !== null && customWallet.derived !== null
+        ? customWallet !== null &&
+          (customWallet.entryMode === "raw"
+            ? customWallet.privateKey !== ""
+            : customWallet.derived !== null)
         : verdict?.valid === true && address.trim() !== "");
 
   const aggregate = report?.aggregate ?? null;

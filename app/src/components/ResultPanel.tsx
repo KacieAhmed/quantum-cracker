@@ -1,6 +1,12 @@
 import { formatCount, formatDuration, formatRate } from "../format";
 import type { RunUiState } from "../reducer";
-import type { Chain, MatchInfo, PreSeedDiscoveryInfo, RunReport } from "../types";
+import type {
+  Chain,
+  MatchInfo,
+  PreSeedDiscoveryInfo,
+  RawKeyProofInfo,
+  RunReport,
+} from "../types";
 import { isPreseedMatch } from "../types";
 import { Infeasibility } from "./Infeasibility";
 
@@ -262,6 +268,158 @@ function PreSeedDiscoveryCard({ discovery }: { discovery: PreSeedDiscoveryInfo }
     </section>
   );}
 
+/** The address a proof's matchedPath names — empty when nothing matched. */
+function matchedProofAddress(proof: RawKeyProofInfo): string {
+  switch (proof.matchedPath) {
+    case "eth":
+      return proof.addressEth;
+    case "btc-p2pkh-compressed":
+      return proof.addressP2pkhCompressed;
+    case "btc-p2pkh-uncompressed":
+      return proof.addressP2pkhUncompressed;
+    case null:
+      return "";
+  }
+}
+
+/**
+ * Raw private-key proof (own-wallet flow, pre-BIP-39 wallets): the engine
+ * derived every address this key controls. The card freezes the full chain
+ * — WIF forms, raw scalar, both public keys, every derived address — and
+ * states the verdict: a definitive derivation proof on match, or an honest
+ * no-match showing what the key ACTUALLY derives to. Same freeze-and-display
+ * treatment as the phrase-based proof cards.
+ */
+function RawKeyProofCard({ report }: { report: RunReport }) {
+  const proof = report.rawKeyProof;
+  if (proof === null || proof === undefined) return null;
+  const matched = matchedProofAddress(proof);
+  return (
+    <section
+      className={matched === "" ? "card result exhausted" : "card result matched"}
+      aria-label={
+        matched === ""
+          ? "Raw private-key proof — no match"
+          : "Raw private-key proof — derivation confirmed"
+      }
+    >
+      {matched !== "" && (
+        <div className="match-banner" role="status">
+          <h2>❄ Run frozen — derivation proof complete</h2>
+          <span className="match-sub">
+            derivation engine idle · key material and proof below
+          </span>
+        </div>
+      )}
+      <div className="card-title-row">
+        <h2>
+          {matched === ""
+            ? "◉ Raw-key proof — no match"
+            : "◉ Raw-key proof — derivation confirmed"}
+        </h2>
+        <span className={matched === "" ? "level-badge amber" : "level-badge normal"}>
+          {matched === "" ? "no match — honest result" : "derivation proof"}
+        </span>
+      </div>
+      <p className="note">
+        Every value below was computed from the key you entered by the same
+        engine the search modes run per candidate. A raw key is the{" "}
+        <strong>leaf of the derivation tree</strong> — no seed phrase and no
+        BIP-32 path applies, so the proof is instant and exact. Nothing was
+        searched and nothing is stored.
+      </p>
+      <div className="proof-grid">
+        {proof.inputForm === "wif" && proof.inputWif !== null ? (
+          <>
+            <div className="proof-cell recovered">
+              <span className="proof-label">entered key (WIF, as typed)</span>
+              <span className="kv-value mono">{proof.inputWif}</span>
+            </div>
+            <div className="proof-cell">
+              <span className="proof-label">same key, raw 64-hex form</span>
+              <span className="kv-value mono">{proof.privateKeyHex}</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="proof-cell recovered">
+              <span className="proof-label">entered key (64-hex scalar)</span>
+              <span className="kv-value mono">{proof.privateKeyHex}</span>
+            </div>
+            <div className="proof-cell">
+              <span className="proof-label">
+                same key, wallet-import format (WIF, compressed)
+              </span>
+              <span className="kv-value mono">{proof.wifCompressed}</span>
+            </div>
+          </>
+        )}
+        <div className="proof-cell">
+          <span className="proof-label">
+            same key, WIF (uncompressed — 0x80 payload, no compression marker)
+          </span>
+          <span className="kv-value mono">{proof.wifUncompressed}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">derived public key (compressed, 33-byte)</span>
+          <span className="kv-value mono">{proof.pubkeyCompressedHex}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">derived public key (uncompressed, 65-byte)</span>
+          <span className="kv-value mono">{proof.pubkeyUncompressedHex}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">
+            legacy P2PKH address (from compressed key) — path-less leaf encoding
+          </span>
+          <span className="kv-value mono">{proof.addressP2pkhCompressed}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">legacy P2PKH address (from uncompressed key)</span>
+          <span className="kv-value mono">{proof.addressP2pkhUncompressed}</span>
+        </div>
+        <div className="proof-cell">
+          <span className="proof-label">Ethereum address (keccak-256 of x‖y, EIP-55)</span>
+          <span className="kv-value mono">{proof.addressEth}</span>
+        </div>
+      </div>
+      {matched !== "" ? (
+        <p className="verdict ok proof-verdict">
+          ✓ PROVEN: this key genuinely derives {matched}
+          {proof.expectedAddress !== null
+            ? ` — the expected address is controlled by this key, no search performed.`
+            : " — a definitive derivation proof, not a heuristic."}
+        </p>
+      ) : (
+        <p className="verdict bad proof-verdict">
+          {proof.expectedAddress !== null
+            ? `✗ No match: this key is valid, but it does not derive ${proof.expectedAddress}. The addresses above ARE the ones this key controls — if your wallet shows a different address, the key you entered is not the key your wallet uses.`
+            : "No expected address was supplied — the proof simply shows every address this key derives."}
+        </p>
+      )}
+      <div className="verify-recipe">
+        <h3>Verify externally (recommended)</h3>
+        <ol>
+          <li>
+            Import the WIF (or paste the 64-hex private key) above into any
+            standard open-source key-to-address tool (e.g. the well-known
+            iancoleman.io toolchain, run offline).
+          </li>
+          <li>
+            Confirm the tool's public keys equal the compressed and
+            uncompressed forms shown.
+          </li>
+          <li>
+            Confirm the tool's Ethereum and legacy P2PKH addresses equal the
+            addresses above — the same derivation any wallet performs.
+          </li>
+        </ol>
+      </div>
+      <Infeasibility />
+    </section>
+  );
+}
+
 function ExhaustedCard({ report }: { report: RunReport }) {
   const agg = report.aggregate;
   return (
@@ -391,6 +549,8 @@ export function ResultPanel({ ui, chain }: ResultPanelProps) {
           customWallet={report.customWallet ?? null}
         />
       );
+    case "proven":
+      return <RawKeyProofCard report={report} />;
     case "exhausted":
       return <ExhaustedCard report={report} />;
     case "budget-reached":

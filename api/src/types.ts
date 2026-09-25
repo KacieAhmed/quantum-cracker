@@ -76,6 +76,41 @@ export function isPreseedMatch(
 }
 
 /**
+ * A raw private-key derivation proof (own-wallet flow, pre-BIP-39 wallets):
+ * the input form, both canonical WIF renderings, the 64-hex scalar, both
+ * public-key encodings, and every supported address — all derived from the
+ * scalar alone (a raw key IS the leaf; no BIP-39/BIP-32 tree applies).
+ * Field names mirror cracker_core::rawkey::RawKeyProof.
+ */
+export interface RawKeyProofInfo {
+  /** How the user entered the key. */
+  inputForm: "hex" | "wif";
+  /** The WIF string as entered (null for hex entry). */
+  inputWif: string | null;
+  /** Canonical mainnet WIFs for the compressed and uncompressed flags. */
+  wifCompressed: string;
+  wifUncompressed: string;
+  /** The 32-byte scalar, 64 lowercase hex characters. */
+  privateKeyHex: string;
+  /** 33-byte compressed / 65-byte uncompressed public keys. */
+  pubkeyCompressedHex: string;
+  pubkeyUncompressedHex: string;
+  /** Every supported address, derived from the same scalar. */
+  addressP2pkhCompressed: string;
+  addressP2pkhUncompressed: string;
+  addressEth: string;
+  /** The expectation as supplied (trimmed), or null. */
+  expectedAddress: string | null;
+  /**
+   * When an expected address was supplied: the derived address it equals —
+   * a definitive derivation proof. Null means an honest NO-MATCH: the key
+   * is valid and derives the addresses shown, but none is the expectation
+   * (doc section 8.4: well-formed-but-wrong fails compare, never decode).
+   */
+  matchedPath: "eth" | "btc-p2pkh-compressed" | "btc-p2pkh-uncompressed" | null;
+}
+
+/**
  * Provenance of a run whose search target was derived from a user-supplied
  * seed phrase ("test with your own wallet"). The target is always the
  * engine-derived address — a freeform third-party address is never accepted —
@@ -162,7 +197,10 @@ export type RunStatus =
   | "exhausted"
   | "budget-reached"
   | "cancelled"
-  | "error";
+  | "error"
+  /** Raw private-key proof run: the derivation proof completed (the proof
+   * payload's matchedPath carries the match/no-match verdict). */
+  | "proven";
 
 export interface Aggregate {
   derived: number;
@@ -197,12 +235,18 @@ export interface RunReport {
    */
   preseedDiscovery: PreSeedDiscoveryInfo | null;
   /**
+   * Set on a raw private-key proof run (own-wallet flow, pre-BIP-39
+   * wallets): the complete derivation chain plus the expected-address
+   * verdict. The proof run never searches — it settles immediately.
+   */
+  rawKeyProof: RawKeyProofInfo | null;
+  /**
    * How the run traverses its space: bounded = shuffled exhaustive coverage
    * (finishable, ETA disclosed), lottery = uniform random sampling of the
    * full 2^128 checksum-valid phrase space (no finishability claim). A
    * report without this field is a bounded/classic run.
    */
-  searchKind?: "bounded" | "lottery";
+  searchKind?: "bounded" | "lottery" | "proof";
   /** Set when the run is an explicitly disclosed any-address feasibility probe. */
   probe: ProbeProvenance | null;
 }

@@ -149,7 +149,9 @@ export type RunStatus =
   | "exhausted"
   | "budget-reached"
   | "cancelled"
-  | "error";
+  | "error"
+  /** Raw private-key proof: settled instantly with the derivation chain. */
+  | "proven";
 
 export interface Aggregate {
   derived: number;
@@ -186,8 +188,48 @@ export interface RunReport {
    * full 2^128 checksum-valid phrase space (no finishability claim).
    * Mirrors api/src/types.ts.
    */
-  searchKind?: "bounded" | "lottery";
+  searchKind?: "bounded" | "lottery" | "proof";
+  /** Raw private-key proof: the frozen derivation chain and its verdict. */
+  rawKeyProof?: RawKeyProofInfo | null;
 }
+
+/**
+ * Raw private-key derivation proof (own-wallet flow, pre-BIP-39 wallets):
+ * the engine derived every address one scalar controls. A raw key IS the
+ * derivation leaf — no BIP-39/BIP-32 path applies. Mirrors api/src/types.ts.
+ */
+export interface RawKeyProofInfo {
+  /** How the key was entered: raw hex scalar or wallet-import WIF. */
+  inputForm: "hex" | "wif";
+  /** The WIF as entered (wif input only). */
+  inputWif: string | null;
+  /** The key re-encoded as mainnet WIF (compressed marker). */
+  wifCompressed: string;
+  /** The key re-encoded as mainnet WIF (uncompressed marker). */
+  wifUncompressed: string;
+  /** The scalar, 64 lowercase hex characters. */
+  privateKeyHex: string;
+  pubkeyCompressedHex: string;
+  pubkeyUncompressedHex: string;
+  /** Bitcoin legacy P2PKH from the compressed public key. */
+  addressP2pkhCompressed: string;
+  /** Bitcoin legacy P2PKH from the uncompressed public key. */
+  addressP2pkhUncompressed: string;
+  /** Ethereum EIP-55 address (keccak-256 of the 64-byte x‖y). */
+  addressEth: string;
+  /** The user's cross-check address, or null when not supplied. */
+  expectedAddress: string | null;
+  /**
+   * Which derivation matched the expected address — a definitive proof —
+   * or null for an honest no-match (or no expected address given).
+   */
+  matchedPath: RawKeyMatchedPath | null;
+}
+
+export type RawKeyMatchedPath =
+  | "eth"
+  | "btc-p2pkh-compressed"
+  | "btc-p2pkh-uncompressed";
 
 /** WS messages the API broadcasts (GET /ws). */
 export type ServerMessage =
@@ -253,7 +295,13 @@ export interface CrackRequest {
   force?: boolean;
   /** "Test with your own wallet": the target is derived from this mnemonic. */
   customWallet?: {
-    mnemonic: string;
+    /**
+     * A BIP-39 mnemonic the user OWNS — or, for pre-BIP-39 wallets, the raw
+     * private key instead: exactly one of mnemonic/privateKey (server 400s
+     * on both or neither).
+     */
+    mnemonic?: string;
+    privateKey?: string;
     passphrase?: string;
     /** Optional cross-check — must equal the derived address. */
     expectedAddress?: string;

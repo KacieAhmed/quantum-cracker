@@ -589,6 +589,274 @@ describe("custom wallet mode (own mnemonic, derived target)", () => {
   });
 });
 
+describe("raw private-key proof (own wallet, pre-BIP-39)", () => {
+  // k = 1 derives to the generator point G — the fixture's canned proof
+  // mirrors the real engine's values for this scalar (pubkeys, P2PKH pair,
+  // keccak/EIP-55 address).
+  const K1_HEX =
+    "0000000000000000000000000000000000000000000000000000000000000001";
+  const K1_WIF_C =
+    "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn";
+  const K1_WIF_U =
+    "5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf";
+  const K1_ETH = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
+  const K1_BTC_C = "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH";
+  const K1_BTC_U = "1EHNa6P4AAaDEoRCvJ4m1jWWtLxE5vCjyS";
+
+  it("proves a raw hex scalar instantly and settles the run", async () => {
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: { privateKey: K1_HEX },
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const body = started.json();
+      expect(body.searchKind).toBe("proof");
+      const proof = body.rawKeyProof;
+      expect(proof.inputForm).toBe("hex");
+      expect(proof.inputWif).toBeNull();
+      expect(proof.privateKeyHex).toBe(K1_HEX);
+      expect(proof.wifCompressed).toBe(K1_WIF_C);
+      expect(proof.wifUncompressed).toBe(K1_WIF_U);
+      expect(proof.pubkeyCompressedHex).toBe(
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      );
+      expect(proof.pubkeyUncompressedHex).toBe(
+        "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+      );
+      expect(proof.addressP2pkhCompressed).toBe(K1_BTC_C);
+      expect(proof.addressP2pkhUncompressed).toBe(K1_BTC_U);
+      expect(proof.addressEth).toBe(K1_ETH);
+      expect(proof.matchedPath).toBeNull();
+      expect(body.note).toContain("Raw private-key proof");
+      expect(body.note).toContain("expectedAddress");
+
+      const doneMsg = await nextMatching((m) => m.type === "done");
+      if (doneMsg.type !== "done") throw new Error("unreachable");
+      ws.close();
+      const report = doneMsg.report;
+      expect(report.status).toBe("proven");
+      expect(report.searchKind).toBe("proof");
+      expect(report.lanes).toEqual([]);
+      expect(report.totalCandidates).toBe(0);
+      expect(report.aggregate.matches).toBe(0);
+      expect(report.rawKeyProof.matchedPath).toBeNull();
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("matches an expected Ethereum address from a compressed WIF", async () => {
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+
+      // Uppercase on purpose: the expected-address comparison is
+      // case-insensitive, exactly like the phrase cross-check.
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "classic",
+          customWallet: {
+            privateKey: K1_WIF_C,
+            expectedAddress: K1_ETH.toUpperCase().replace(
+              /^0X/,
+              "0x",
+            ),
+          },
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const body = started.json();
+      expect(body.searchKind).toBe("proof");
+      expect(body.rawKeyProof.inputForm).toBe("wif");
+      expect(body.rawKeyProof.inputWif).toBe(K1_WIF_C);
+      expect(body.rawKeyProof.matchedPath).toBe("eth");
+      expect(body.note).toContain("Match");
+
+      const doneMsg = await nextMatching((m) => m.type === "done");
+      if (doneMsg.type !== "done") throw new Error("unreachable");
+      ws.close();
+      expect(doneMsg.report.status).toBe("proven");
+      expect(doneMsg.report.aggregate.matches).toBe(1);
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("matches an expected Bitcoin P2PKH address via the compression flag", async () => {
+    const { app } = await makeApp();
+    try {
+      // The compression marker on the WIF payload decides the canonical
+      // encoding: an uncompressed WIF derives the uncompressed P2PKH address.
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "classic",
+          customWallet: {
+            privateKey: K1_WIF_U,
+            expectedAddress: K1_BTC_U,
+          },
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      expect(started.json().rawKeyProof.inputForm).toBe("wif");
+      expect(started.json().rawKeyProof.matchedPath).toBe(
+        "btc-p2pkh-uncompressed",
+      );
+
+      const compressed = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "bitcoin",
+          mode: "classic",
+          customWallet: {
+            privateKey: K1_WIF_C,
+            expectedAddress: K1_BTC_C,
+          },
+        },
+      });
+      expect(compressed.statusCode).toBe(201);
+      expect(compressed.json().rawKeyProof.matchedPath).toBe(
+        "btc-p2pkh-compressed",
+      );
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("reports an honest no-match as a proven run, not an error", async () => {
+    // Well-formed but wrong: a valid address this key does not derive.
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: {
+            privateKey: K1_HEX,
+            expectedAddress: "1JaUQDVNRdhfNsVncGkXedaPSM5Gc54Hso",
+          },
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const body = started.json();
+      expect(body.rawKeyProof.matchedPath).toBeNull();
+      expect(body.note).toContain("No match");
+
+      const doneMsg = await nextMatching((m) => m.type === "done");
+      if (doneMsg.type !== "done") throw new Error("unreachable");
+      ws.close();
+      expect(doneMsg.report.status).toBe("proven");
+      expect(doneMsg.report.aggregate.matches).toBe(0);
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("rejects both or neither key sources with a clear 400", async () => {
+    const { app } = await makeApp();
+    try {
+      const both = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: { mnemonic: OWN_PHRASE, privateKey: K1_HEX },
+        },
+      });
+      expect(both.statusCode).toBe(400);
+      expect(both.json().error).toContain("exactly one key source");
+
+      const neither = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: { chain: "ethereum", mode: "classic", customWallet: {} },
+      });
+      expect(neither.statusCode).toBe(400);
+      expect(neither.json().error).toContain("exactly one key source");
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("rejects malformed keys and malformed expected addresses with 422", async () => {
+    const { app } = await makeApp();
+    try {
+      const shortHex = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: { privateKey: "1234" },
+        },
+      });
+      expect(shortHex.statusCode).toBe(422);
+      expect(shortHex.json().error).toContain("64 hex characters");
+
+      const zero = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: { privateKey: `0x${"0".repeat(64)}` },
+        },
+      });
+      expect(zero.statusCode).toBe(422);
+      expect(zero.json().error).toContain("zero scalar");
+
+      const badWif = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: { privateKey: `${K1_WIF_C}x` },
+        },
+      });
+      expect(badWif.statusCode).toBe(422);
+      expect(badWif.json().error).toContain("checksum");
+
+      const badExpected = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          customWallet: { privateKey: K1_HEX, expectedAddress: "0xBAD" },
+        },
+      });
+      expect(badExpected.statusCode).toBe(422);
+      expect(badExpected.json().error).toContain("malformed address");
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+});
+
 describe("limited-keyspace mode (vary slots over the full wordlist)", () => {
   // Fake-CLI-valid 12-word phrase; slot 11 (the twelfth word) is "accident".
   const PHRASE =

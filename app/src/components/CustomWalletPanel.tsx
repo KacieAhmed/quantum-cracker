@@ -9,13 +9,23 @@ import { LotteryDisclosure } from "./LotteryDisclosure";
 
 /** Everything the panel reports up to App, which owns the /crack request. */
 export interface CustomWalletSelection {
+  /** Which entry the run sends: a seed phrase, or the raw key itself. */
+  entryMode: "phrase" | "raw";
   mnemonic: string;
+  /** Raw private key (64-hex scalar or mainnet WIF) — raw mode only. */
+  privateKey: string;
   passphrase: string;
   expectedAddress: string;
   derived: DeriveResponse | null;
   /** 0-based positions varied over the full BIP-39 list (classical mode). */
   varySlots: number[];
 }
+
+/** Entry-mode options: seed-phrase entry, or raw private-key entry. */
+const ENTRY_MODES: readonly ("phrase" | "raw")[] = [
+  "phrase",
+  "raw",
+] as const;
 
 interface CustomWalletPanelProps {
   chain: Chain;
@@ -56,6 +66,73 @@ function DeriveRow({
 }
 
 /**
+ * Raw private-key entry (pre-BIP-39 wallets): paste a key YOU already hold —
+ * a 64-hex scalar or a mainnet WIF. Nothing is derived client-side; the run
+ * computes the full chain server-side and freezes the proof. A raw key IS
+ * the derivation leaf, so this flow never searches — it proves.
+ */
+export function RawKeyEntry({
+  privateKey,
+  expectedAddress,
+  disabled,
+  onChange,
+}: {
+  privateKey: string;
+  expectedAddress: string;
+  disabled: boolean;
+  onChange: (privateKey: string, expectedAddress: string) => void;
+}) {
+  return (
+    <>
+      <label className="field">
+        <span className="field-label">
+          Your private key (64-hex scalar or mainnet WIF)
+        </span>
+        <textarea
+          className="address-input mono"
+          rows={2}
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          value={privateKey}
+          disabled={disabled}
+          placeholder="0x-prefixed 64-hex scalar, or a K/L (compressed) / 5 (uncompressed) WIF"
+          onChange={(e) => onChange(e.target.value, expectedAddress)}
+        />
+      </label>
+      <label className="field">
+        <span className="field-label">
+          Expected address (optional — compared by exact match)
+        </span>
+        <input
+          className="address-input mono"
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
+          value={expectedAddress}
+          disabled={disabled}
+          placeholder="the address your wallet app shows"
+          onChange={(e) => onChange(privateKey, e.target.value)}
+        />
+      </label>
+      <p className="note">
+        A raw private key is the <strong>leaf of the derivation tree</strong> —
+        no seed phrase and no BIP-32 path applies. The run derives this key's
+        Bitcoin legacy P2PKH addresses (from both the compressed and
+        uncompressed public keys) and its Ethereum address with the same
+        engine code path the searches run per candidate, then freezes the
+        proof. Nothing is searched and nothing is stored — and if you supply
+        an expected address, a no-match is shown honestly, never rounded up.
+        If your wallet displays an address this proof does not produce, the
+        key you entered is not the key your wallet uses.
+      </p>
+    </>
+  );
+}
+
+/**
  * "Test with your own wallet": paste a BIP-39 mnemonic YOU own. The server
  * derives its addresses with the same engine code path it uses when testing
  * candidates and pins the derived address as the search target. A typed
@@ -74,7 +151,9 @@ export function CustomWalletPanel({
   estimatedRate,
   onDerived,
 }: CustomWalletPanelProps) {
+  const [entryMode, setEntryMode] = useState<"phrase" | "raw">("phrase");
   const [mnemonic, setMnemonic] = useState("");
+  const [privateKey, setPrivateKey] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [expectedAddress, setExpectedAddress] = useState("");
   const [derived, setDerived] = useState<DeriveResponse | null>(null);
@@ -92,7 +171,9 @@ export function CustomWalletPanel({
       const nextSlots = varySlots.filter((slot) => slot < wordCountOf(result));
       setVarySlots(nextSlots);
       onDerived({
+        entryMode: "phrase",
         mnemonic: mnemonic.trim(),
+        privateKey: "",
         passphrase,
         expectedAddress: expectedAddress.trim(),
         derived: result,
@@ -102,7 +183,9 @@ export function CustomWalletPanel({
       setDerived(null);
       setVarySlots([]);
       onDerived({
+        entryMode: "phrase",
         mnemonic: mnemonic.trim(),
+        privateKey: "",
         passphrase,
         expectedAddress: expectedAddress.trim(),
         derived: null,
@@ -132,7 +215,9 @@ export function CustomWalletPanel({
     setVarySlots(next);
     if (derived !== null) {
       onDerived({
+        entryMode: "phrase",
         mnemonic: mnemonic.trim(),
+        privateKey: "",
         passphrase,
         expectedAddress: expectedAddress.trim(),
         derived,
@@ -169,6 +254,40 @@ export function CustomWalletPanel({
           ariaLabel="Chain to search for"
         />
       </div>
+      <div className="field">
+        <span className="field-label">Key entry</span>
+        <Segmented
+          options={ENTRY_MODES}
+          value={entryMode}
+          onSelect={(mode) => {
+            setEntryMode(mode);
+            setDerived(null);
+            setVarySlots([]);
+          }}
+          disabled={disabled}
+          ariaLabel="Own-wallet key entry mode"
+        />
+      </div>
+      {entryMode === "raw" ? (
+        <RawKeyEntry
+          privateKey={privateKey}
+          expectedAddress={expectedAddress}
+          disabled={disabled}
+          onChange={(key, expected) => {
+            setPrivateKey(key);
+            onDerived({
+              entryMode: "raw",
+              mnemonic: "",
+              privateKey: key.trim(),
+              passphrase: "",
+              expectedAddress: expected.trim(),
+              derived: null,
+              varySlots: [],
+            });
+          }}
+        />
+      ) : (
+      <>
       <label className="field">
         <span className="field-label">Your BIP-39 seed phrase</span>
         <textarea
@@ -345,6 +464,8 @@ export function CustomWalletPanel({
             </p>
           )}
         </div>
+      )}
+      </>
       )}
     </section>
   );

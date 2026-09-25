@@ -43,13 +43,11 @@ export function AddressPanel({
         autoCapitalize="none"
         autoCorrect="off"
         autoComplete="off"
-        placeholder={
-          "0x… or 1… / bc1… — a corpus address (demo wallets only)"
-        }
+        placeholder={"0x… or 1… / bc1… — any valid address (see the odds disclosure below)"}
         value={address}
         onChange={(e) => onAddress(e.target.value)}
         disabled={disabled}
-        aria-label="Wallet address to search for"
+        aria-label="Wallet address to run the lottery against"
       />
       <p className={`verdict ${checking ? "pending" : valid ? "ok" : "bad"}`} role="status">
         {checking
@@ -61,14 +59,15 @@ export function AddressPanel({
               : `✗ ${verdict.error ?? "not a valid address"}`}
       </p>
       {corpusError !== null ? (
-        <p className="note bad-note">demo corpus unavailable: {corpusError}</p>
+        <p className="note bad-note">demo corpus unavailable (quick picks only): {corpusError}</p>
       ) : (
         corpus !== null && (
           <p className="note">
-            {corpus.wallets.length} bundled demo wallets · searchable space:{" "}
-            {corpus.space.total_prefixes.toLocaleString("en-US")} checksum-valid
-            prefixes ({corpus.space.raw_candidates.toLocaleString("en-US")} raw
-            assemblies). Addresses outside this corpus can never match.
+            “Try a demo wallet” fills a rich-list quick pick. Whatever address
+            you enter, the run behind it is the same full-space lottery over ALL
+            checksum-valid 12-word phrases — the bundled corpus is not searched
+            as a bounded space anymore, and the honest odds apply to every
+            target equally.
           </p>
         )
       )}

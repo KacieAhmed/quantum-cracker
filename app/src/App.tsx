@@ -10,7 +10,7 @@ import {
   wsUrl,
 } from "./api";
 import { FALLBACK_PER_CORE_RATE, estimateAggregateRate, etaSeconds } from "./estimate";
-import { TICKER_LIMIT, VALIDATE_DEBOUNCE_MS } from "./constants";
+import { LOTTERY_ODDS_NOTE, TICKER_LIMIT, VALIDATE_DEBOUNCE_MS } from "./constants";
 import { emptyRunUiState, foldMessage, type RunUiState } from "./reducer";
 import type { Chain, CorpusDoc, Mode, ServerMessage, SystemInfo, TargetVerdict } from "./types";
 import type { CustomWalletSelection } from "./components/CustomWalletPanel";
@@ -96,6 +96,12 @@ export default function App() {
   const report = ui.report;
   const pinnedEntry = ui.pinnedEntry;
   const running = report?.status === "running";
+  // Lottery runs sample the full 2^128 space: they have no finishable
+  // keyspace, so coverage fractions and ETAs are meaningless and never shown.
+  const lotteryRun = report?.searchKind === "lottery";
+  // Address-only classic runs are the consented full-space lottery — one
+  // random-sampling lane with a disclosed draw budget; no worker knob.
+  const addressOnlyLottery = !walletMode && mode === "classic";
 
   // Machine capabilities + bundled corpus, loaded once.
   useEffect(() => {
@@ -215,9 +221,11 @@ export default function App() {
           chain,
           mode,
           address: address.trim(),
-          ...(mode === "classic"
-            ? { workers, force }
-            : { quantumBits: Math.min(quantumBits, QUANTUM_BITS_MAX) }),
+          // Address-only classic run = the full-space lottery. The odds are
+          // disclosed right above the start button (LOTTERY_ODDS_NOTE);
+          // sending probe:true is the user's informed consent to them. The
+          // server refuses to start without it.
+          ...(mode === "classic" ? { probe: true } : { quantumBits: Math.min(quantumBits, QUANTUM_BITS_MAX) }),
         });
       }
       // A fresh run: clear stale outcome cards and the ticker.
@@ -305,17 +313,32 @@ export default function App() {
             />
           )}
           {mode === "classic" ? (
-            <WorkerSlider
-              workers={workers}
-              onWorkers={onWorkers}
-              system={system}
-              force={force}
-              onForce={setForce}
-              disabled={running}
-              estimatedRate={estimatedRate}
-              estimatedEta={estimatedEta}
-              totalCandidates={totalCandidates}
-            />
+            addressOnlyLottery ? (
+              <section className="card" aria-label="Lottery run shape">
+                <div className="card-title-row">
+                  <h2>How this run works</h2>
+                </div>
+                <p className="note">
+                  One random-sampling lane draws ALL 12 words at random over the
+                  full checksum-valid phrase space, at a disclosed draw budget —
+                  worker count does not apply. The pinned calibration phrase is
+                  tested first (labeled “pinned — not random”), then random
+                  draws begin; the run ends at the budget or when you stop it.
+                </p>
+              </section>
+            ) : (
+              <WorkerSlider
+                workers={workers}
+                onWorkers={onWorkers}
+                system={system}
+                force={force}
+                onForce={setForce}
+                disabled={running}
+                estimatedRate={estimatedRate}
+                estimatedEta={estimatedEta}
+                totalCandidates={totalCandidates}
+              />
+            )
           ) : (
             <QuantumConfig
               bits={quantumBits}
@@ -326,6 +349,11 @@ export default function App() {
           )}
         </div>
 
+        {addressOnlyLottery && (
+          <p className="note lottery-disclosure" role="note">
+            {LOTTERY_ODDS_NOTE}
+          </p>
+        )}
         <div className="start-row">
           <button type="button" className="btn primary" onClick={start} disabled={!canStart}>
             {walletMode
@@ -355,8 +383,8 @@ export default function App() {
             <StatsBar
               derived={aggregate?.derived ?? 0}
               rate={aggregate?.derivedPerSec ?? null}
-              fraction={aggregate?.fractionOfKeyspace ?? 0}
-              eta={aggregate?.etaSeconds ?? null}
+              fraction={lotteryRun ? 0 : (aggregate?.fractionOfKeyspace ?? 0)}
+              eta={lotteryRun ? null : (aggregate?.etaSeconds ?? null)}
               measured={aggregate !== null}
             />
             {report.mode === "classic" && <LaneGrid lanes={report.lanes} />}

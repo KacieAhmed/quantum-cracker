@@ -26,7 +26,7 @@ export function LaneGrid({ lanes }: LaneGridProps) {
               <div className="lane-progress-fill" style={{ width: `${lane.fraction * 100}%` }} />
             </div>
             <div className="lane-stats">
-              <span>{formatCount(lane.prefixesDone)} prefixes</span>
+              <span>{formatCount(lane.prefixesDone)} candidates</span>
               <span>{formatRate(lane.rate)}</span>
               <span>{formatCount(lane.derived)} derived</span>
             </div>

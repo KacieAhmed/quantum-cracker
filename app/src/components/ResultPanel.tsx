@@ -44,19 +44,46 @@ function MatchCard({
     (a) => a.value.toLowerCase() === target.toLowerCase(),
   );
   const derivationPath = match.derivationPath ?? match.path;
+  // A discovery derives a WATCHLIST address, not the requested target. It is
+  // a genuine derivation (the run stops for it) but must never be presented
+  // as recovery of the address the run was pointed at.
+  const discovery = match.discovery === true && !verified;
   return (
-    <section className="card result matched" aria-label="Match found">
-      <h2>
-        ✓ Match found — valid seed phrase
-        {workerId !== null && <span className="result-sub"> (lane {workerId})</span>}
-      </h2>
-      <p className="note">
-        This is the ONLY valid seed phrase in this run. Every phrase in the
-        "Recently tested" list was tested and failed; this one is the proof.
-      </p>
+    <section
+      className="card result matched"
+      aria-label={discovery ? "Discovery — watchlist address derived" : "Match found"}
+    >
+      {discovery ? (
+        <>
+          <div className="card-title-row">
+            <h2>◉ Discovery — a watchlist address, NOT your requested target</h2>
+            <span className="level-badge amber">discovery — not a recovery</span>
+          </div>
+          <p className="note">
+            This phrase genuinely derives an address on the run's discovery
+            watchlist, so the run stopped to show it — but it does{" "}
+            <strong>not</strong> derive the address you asked about. The
+            requested target remains unrecovered; the honest odds disclosure
+            still applies to it.
+          </p>
+        </>
+      ) : (
+        <>
+          <h2>
+            ✓ Match found — valid seed phrase
+            {workerId !== null && <span className="result-sub"> (lane {workerId})</span>}
+          </h2>
+          <p className="note">
+            This is the ONLY valid seed phrase in this run. Every phrase in the
+            "Recently tested" list was tested and failed; this one is the proof.
+          </p>
+        </>
+      )}
       <div className="proof-grid">
         <div className="proof-cell recovered">
-          <span className="proof-label">recovered seed phrase</span>
+          <span className="proof-label">
+            {discovery ? "recovered phrase (derives the watchlist address)" : "recovered seed phrase"}
+          </span>
           <span className="kv-value mono phrase">{match.mnemonic}</span>
         </div>
         <div className="proof-cell">
@@ -66,7 +93,9 @@ function MatchCard({
           </span>
         </div>
         <div className="proof-cell">
-          <span className="proof-label">target address (what the run searched for)</span>
+          <span className="proof-label">
+            {discovery ? "requested target (NOT derived by this phrase)" : "target address (what the run searched for)"}
+          </span>
           <span className="kv-value mono">{target}</span>
         </div>
       </div>
@@ -77,14 +106,19 @@ function MatchCard({
           <FragmentRow key={a.label} label={`${a.label} (all paths)`} value={a.value} />
         ))}
       </div>
-      {verified && (
+      {discovery ? (
+        <p className="verdict ok proof-verdict">
+          ✓ Derivation equality holds against the WATCHLIST address shown above,
+          not the requested target — a match is claimed exactly when a tested
+          phrase derives an address, and this one is labeled accordingly.
+        </p>
+      ) : verified ? (
         <p className="verdict ok proof-verdict">
           ✓ PROVEN: the address derived from the recovered phrase at{" "}
           {derivationPath} equals the target address — that equality is the
           proof, not a heuristic.
         </p>
-      )}
-      {!verified && (
+      ) : (
         <p className="verdict bad proof-verdict">
           ⚠ derived addresses recorded — target comparison inconclusive, inspect
           the run report.
@@ -154,13 +188,46 @@ function ExhaustedCard({ report }: { report: RunReport }) {
 
 function CancelledCard({ report }: { report: RunReport }) {
   const agg = report.aggregate;
+  const lottery = report.searchKind === "lottery";
   return (
     <section className="card result cancelled" aria-label="Run cancelled">
       <h2>Run cancelled</h2>
+      {lottery ? (
+        <p>
+          Stopped after {formatCount(agg?.derived ?? 0)} draws at{" "}
+          {agg === null ? "—" : formatRate(agg.derivedPerSec)}. A lottery has no
+          finishable space — nothing was “partially covered”; the honest odds
+          disclosure applied from the start and still holds.
+        </p>
+      ) : (
+        <p>
+          Partial scan: {formatCount(agg?.derived ?? 0)} candidates derived (
+          {agg === null ? "—" : `${(agg.fractionOfKeyspace * 100).toFixed(1)}%`} of the demo
+          keyspace) at {agg === null ? "—" : formatRate(agg.derivedPerSec)} before cancellation.
+        </p>
+      )}
+      <Infeasibility />
+    </section>
+  );
+}
+
+function BudgetReachedCard({ report }: { report: RunReport }) {
+  const agg = report.aggregate;
+  return (
+    <section className="card result exhausted" aria-label="Draw budget reached">
+      <h2>No match — the draw budget is spent</h2>
       <p>
-        Partial scan: {formatCount(agg?.derived ?? 0)} candidates derived (
-        {agg === null ? "—" : `${(agg.fractionOfKeyspace * 100).toFixed(1)}%`} of the demo
-        keyspace) at {agg === null ? "—" : formatRate(agg.derivedPerSec)} before cancellation.
+        The lottery made {formatCount(agg?.derived ?? report.totalCandidates)} random draws at{" "}
+        <strong>{agg === null ? "—" : formatRate(agg.derivedPerSec)}</strong> and stopped at its
+        disclosed budget. None of them derived the target address.
+      </p>
+      <p>
+        This is not an exhausted search: the space of checksum-valid 12-word
+        phrases is 2^128 ≈ 3.4×10^38, so a budget-sized lottery cannot cover it —
+        the run never claimed exhaustive coverage, before or after. At{" "}
+        {agg === null ? "this" : formatRate(agg.derivedPerSec)}, sweeping 2^128 phrases would take
+        far longer than the age of the universe, and Grover's quadratic speedup would still need
+        ~2^64 oracle calls.
       </p>
       <Infeasibility />
     </section>
@@ -217,6 +284,8 @@ export function ResultPanel({ ui, chain }: ResultPanelProps) {
       ) : null;
     case "exhausted":
       return <ExhaustedCard report={report} />;
+    case "budget-reached":
+      return <BudgetReachedCard report={report} />;
     case "cancelled":
       return <CancelledCard report={report} />;
     case "error":

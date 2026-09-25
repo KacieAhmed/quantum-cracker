@@ -1,7 +1,7 @@
-//! Integration tests for the probe permission gate: targets outside the
-//! embedded demo corpus require `--probe`, and the same flag stamps every
-//! emitted event with `"probe": true` — the label is inseparable from the
-//! permission.
+//! Integration tests for the probe permission gates: targets outside the
+//! embedded demo corpus require `--probe` (stamping every event with
+//! `"probe": true`) or the API-attested `--derived-target` permission
+//! (stamping `"derived_target": true` for own-wallet in-request derivation).
 
 use std::process::Command;
 
@@ -120,4 +120,53 @@ fn custom_pool_skips_the_corpus_gate() {
         "start carries probe: {stdout}"
     );
     let _ = std::fs::remove_file(&pool_path);
+}
+
+#[test]
+fn foreign_target_with_derived_target_runs_stamped_not_probe() {
+    // Own-wallet flow: the API attests the target was derived from a mnemonic
+    // supplied in the same request, so a non-corpus target may run WITHOUT
+    // probe semantics — but every event still carries "derived_target": true.
+    let out = cli()
+        .arg("--target")
+        .arg(FOREIGN_ETH)
+        .arg("--derived-target")
+        .output()
+        .expect("cracker-cli runs");
+    assert_eq!(out.status.code(), Some(1), "stderr: {:?}", out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if event["event"] == "start" || event["event"] == "done" {
+            assert_eq!(
+                event["derived_target"],
+                serde_json::json!(true),
+                "derived_target stamp on {event}"
+            );
+            assert_eq!(
+                event["probe"],
+                serde_json::json!(false),
+                "derived-target runs are never labeled as probes: {event}"
+            );
+        }
+    }
+}
+
+#[test]
+fn probe_and_derived_target_are_mutually_exclusive() {
+    let out = cli()
+        .arg("--target")
+        .arg(FOREIGN_ETH)
+        .arg("--probe")
+        .arg("--derived-target")
+        .output()
+        .expect("cracker-cli runs");
+    assert_eq!(out.status.code(), Some(2), "stderr: {:?}", out.stderr);
+    let message = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        message.contains("mutually exclusive"),
+        "error names the exclusivity: {message}"
+    );
 }

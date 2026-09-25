@@ -136,6 +136,14 @@ struct Args {
     #[arg(long)]
     probe: bool,
 
+    /// Derived-target permission: the caller attests the target was derived
+    /// from a mnemonic supplied in the same request (own-wallet flow), so a
+    /// non-corpus target is self-referential verification, not a freeform
+    /// address. Stamps every event with "derived_target": true. Mutually
+    /// exclusive with --probe.
+    #[arg(long)]
+    derived_target: bool,
+
     /// Validate the targets against the engine rules (doc section 8) and exit
     /// without searching: one JSON verdict per target, exit 0 iff all valid.
     #[arg(long)]
@@ -285,8 +293,8 @@ fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
     }
 }
 
-fn match_event(m: &Match, probe: bool) -> serde_json::Value {
-    serde_json::json!({ "event": "match", "match": m, "derivation_path": m.path.bip32_path(), "probe": probe })
+fn match_event(m: &Match, probe: bool, derived_target: bool) -> serde_json::Value {
+    serde_json::json!({ "event": "match", "match": m, "derivation_path": m.path.bip32_path(), "probe": probe, "derived_target": derived_target })
 }
 
 /// One JSON object for `--derive-mnemonic`: every supported address of the
@@ -437,6 +445,11 @@ fn embedded_corpus_addresses() -> cracker_core::Result<std::collections::HashSet
 
 fn run_pool(args: &Args) -> cracker_core::Result<bool> {
     let probe = args.probe;
+    if args.probe && args.derived_target {
+        return Err(CrackerError::Other(
+            "--probe and --derived-target are mutually exclusive permissions".to_string(),
+        ));
+    }
     let shuffle_seed = run_seed(args);
     let pool = load_pool(args)?;
     // Embedded-corpus targeting needs no permission; the moment a target falls
@@ -444,11 +457,12 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
     // same flag, so a non-corpus search cannot emit a single unlabeled event.
     // Custom pools (--pool-json, e.g. limited-keyspace runs) are explicitly
     // configured spaces and skip the corpus gate.
-    let corpus: Option<std::collections::HashSet<String>> = if probe || args.pool_json.is_some() {
-        None
-    } else {
-        Some(embedded_corpus_addresses()?)
-    };
+    let corpus: Option<std::collections::HashSet<String>> =
+        if probe || args.derived_target || args.pool_json.is_some() {
+            None
+        } else {
+            Some(embedded_corpus_addresses()?)
+        };
     let mut targets = Vec::new();
     for t in &args.targets {
         let parsed = parse_target(t)?;
@@ -517,6 +531,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
             "address_type": args.address_type.label(),
             "targets": args.targets,
             "probe": probe,
+            "derived_target": args.derived_target,
         });
         writeln!(out, "{start_event}")?;
         out.flush()?;
@@ -559,6 +574,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
         let searcher = Arc::clone(&searcher);
         let done = Arc::clone(&done);
         let interval = Duration::from_millis(args.progress_ms);
+        let derived_target = args.derived_target; // Copy into the 'static ticker thread
         let mut last_derived = 0u64;
         let mut last_tick = Instant::now();
         std::thread::spawn(move || {
@@ -585,7 +601,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
                 {
                     let mut out = std::io::stdout().lock();
                     for m in &newly {
-                        if writeln!(out, "{}", match_event(m, probe)).is_err() {
+                        if writeln!(out, "{}", match_event(m, probe, derived_target)).is_err() {
                             ok = false;
                             break;
                         }
@@ -611,6 +627,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
                                 .pool
                                 .candidate_at(frontier),
                             "probe": probe,
+                            "derived_target": derived_target,
                         });
                         if writeln!(out, "{line}").is_err() || out.flush().is_err() {
                             ok = false;
@@ -642,13 +659,14 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
     {
         let mut out = std::io::stdout().lock();
         for m in &all_matches {
-            writeln!(out, "{}", match_event(m, probe))?;
+            writeln!(out, "{}", match_event(m, probe, args.derived_target))?;
         }
         let derived = searcher.progress.derived.load(Ordering::Relaxed);
         let done_event = serde_json::json!({
             "event": "done",
             "mode": "pool",
             "probe": probe,
+            "derived_target": args.derived_target,
             "prefixes_done": searcher.progress.prefixes_done.load(Ordering::Relaxed),
             "derived": derived,
             "elapsed_ms": elapsed.as_millis() as u64,

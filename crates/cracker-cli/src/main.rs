@@ -130,9 +130,10 @@ struct Args {
     exhaustive: bool,
 
     /// Feasibility-probe permission: allows targets outside the embedded demo
-    /// corpus. Required for non-corpus targets over the bundled pool, and the
-    /// same flag stamps every emitted event with "probe": true — the probe
-    /// label is inseparable from the permission, on every report surface.
+    /// corpus. Required for non-corpus targets in any traversal (bounded pool
+    /// or full-space lottery), and the same flag stamps every emitted event
+    /// with "probe": true — the probe label is inseparable from the
+    /// permission, on every report surface.
     #[arg(long)]
     probe: bool,
 
@@ -143,6 +144,15 @@ struct Args {
     /// exclusive with --probe.
     #[arg(long)]
     derived_target: bool,
+
+    /// Discovery watchlist file: one address per line (blank lines and
+    /// #-comments skipped); the embedded demo-corpus addresses are unioned
+    /// in. Any candidate that genuinely derives a listed address ends the
+    /// run as a labeled discovery — a real-world wallet, never presented as
+    /// the phrase for the user's requested target. Pins are exempt: the
+    /// calibration anchor tests requested targets only.
+    #[arg(long)]
+    watchlist: Option<String>,
 
     /// Validate the targets against the engine rules (doc section 8) and exit
     /// without searching: one JSON verdict per target, exit 0 iff all valid.
@@ -260,7 +270,12 @@ fn pinned_candidate(args: &Args) -> Option<String> {
 /// Emit the pinned-candidate event (the tested-phrases feed renders the
 /// label). `tested` is false when the pin fails BIP-39 validation — it is
 /// never silently remapped to a recomputed phrase.
-fn emit_pinned_event(pin: &str, tested: bool) -> cracker_core::Result<()> {
+fn emit_pinned_event(
+    pin: &str,
+    tested: bool,
+    probe: bool,
+    derived_target: bool,
+) -> cracker_core::Result<()> {
     let mut out = std::io::stdout().lock();
     let e = serde_json::json!({
         "event": "pinned",
@@ -268,6 +283,8 @@ fn emit_pinned_event(pin: &str, tested: bool) -> cracker_core::Result<()> {
         "label": PINNED_LABEL,
         "tested": tested,
         "matched": false,
+        "probe": probe,
+        "derived_target": derived_target,
     });
     writeln!(out, "{e}")?;
     out.flush()?;
@@ -294,7 +311,49 @@ fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
 }
 
 fn match_event(m: &Match, probe: bool, derived_target: bool) -> serde_json::Value {
-    serde_json::json!({ "event": "match", "match": m, "derivation_path": m.path.bip32_path(), "probe": probe, "derived_target": derived_target })
+    serde_json::json!({ "event": "match", "match": m, "derivation_path": m.path.bip32_path(), "probe": probe, "derived_target": derived_target, "discovery": m.discovery })
+}
+
+/// Load the discovery watchlist: one address per line (blank lines and
+/// #-comments skipped); the embedded demo-corpus addresses are unioned in —
+/// a candidate deriving a corpus wallet is a real-world hit. Parsing is
+/// strict: one malformed line fails the run rather than silently shrinking
+/// the watchlist.
+fn discovery_watchlist(args: &Args) -> cracker_core::Result<Vec<Target>> {
+    let Some(path) = &args.watchlist else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| CrackerError::Other(format!("--watchlist {path}: {e}")))?;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let t = parse_target(line)
+            .map_err(|e| CrackerError::Other(format!("--watchlist {path}:{}: {e}", n + 1)))?;
+        let t = Target {
+            kind: t.kind(),
+            bytes: t.bytes(),
+        };
+        if seen.insert(t) {
+            out.push(t);
+        }
+    }
+    for addr in embedded_corpus_addresses_raw()? {
+        let t = parse_target(&addr)
+            .map_err(|e| CrackerError::Other(format!("embedded corpus address {addr}: {e}")))?;
+        let t = Target {
+            kind: t.kind(),
+            bytes: t.bytes(),
+        };
+        if seen.insert(t) {
+            out.push(t);
+        }
+    }
+    Ok(out)
 }
 
 /// One JSON object for `--derive-mnemonic`: every supported address of the
@@ -411,17 +470,17 @@ fn list_targets() -> cracker_core::Result<serde_json::Value> {
     }))
 }
 
-/// Lowercased normalized addresses of the embedded demo corpus (the cross-check
-/// wallets plus the pooled demo wallet), straight from the engine's
-/// wallets.json — the permission boundary for non-probe searches.
-fn embedded_corpus_addresses() -> cracker_core::Result<std::collections::HashSet<String>> {
+/// Raw (case-preserving) addresses of the embedded demo corpus. Base58 is
+/// case-sensitive, so callers parsing BTC P2PKH entries must keep the original
+/// form; only hex/ETH and bech32 are safe to lowercase.
+fn embedded_corpus_addresses_raw() -> cracker_core::Result<Vec<String>> {
     let doc: serde_json::Value = serde_json::from_str(cracker_core::WALLETS_JSON)
         .map_err(|e| CrackerError::Other(format!("embedded wallets.json: {e}")))?;
-    let mut set = std::collections::HashSet::new();
+    let mut out = Vec::new();
     fn push_addresses(
         v: &serde_json::Value,
         ctx: &str,
-        set: &mut std::collections::HashSet<String>,
+        out: &mut Vec<String>,
     ) -> cracker_core::Result<()> {
         for key in ["eth", "btc_p2pkh", "btc_bech32"] {
             let addr = v[key]["address"].as_str().ok_or_else(|| {
@@ -429,22 +488,34 @@ fn embedded_corpus_addresses() -> cracker_core::Result<std::collections::HashSet
                     "embedded wallets.json: {ctx} missing {key}.address"
                 ))
             })?;
-            set.insert(addr.to_lowercase());
+            out.push(addr.to_string());
         }
         Ok(())
     }
     let wallets = doc["wallets"].as_array().ok_or_else(|| {
         CrackerError::Other("embedded wallets.json: missing wallets array".to_string())
     })?;
-    for w in wallets {
-        push_addresses(w, "wallet", &mut set)?;
+    for (i, w) in wallets.iter().enumerate() {
+        push_addresses(w, &format!("wallet {}", i + 1), &mut out)?;
     }
-    push_addresses(&doc["pooled_demo_wallet"], "pooled_demo_wallet", &mut set)?;
-    Ok(set)
+    push_addresses(&doc["pooled_demo_wallet"], "pooled_demo_wallet", &mut out)?;
+    Ok(out)
+}
+
+/// Lowercased normalized addresses of the embedded demo corpus (the cross-check
+/// wallets plus the pooled demo wallet), straight from the engine's
+/// wallets.json — the permission boundary for non-probe searches.
+fn embedded_corpus_addresses() -> cracker_core::Result<std::collections::HashSet<String>> {
+    Ok(embedded_corpus_addresses_raw()?
+        .into_iter()
+        .map(|a| a.to_lowercase())
+        .collect())
 }
 
 fn run_pool(args: &Args) -> cracker_core::Result<bool> {
     let probe = args.probe;
+    let derived_target = args.derived_target;
+    let discovery = discovery_watchlist(args)?;
     if args.probe && args.derived_target {
         return Err(CrackerError::Other(
             "--probe and --derived-target are mutually exclusive permissions".to_string(),
@@ -502,6 +573,7 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
             targets,
             traversal_seed: shuffle_seed,
             pinned_first: pin.clone(),
+            discovery,
         },
         !args.exhaustive,
     ));
@@ -543,15 +615,17 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
     // runs, not a bug.
     if let Some(pin) = &pin {
         let pin_valid = cracker_core::bip39::validate(pin).is_ok();
-        emit_pinned_event(pin, pin_valid)?;
+        emit_pinned_event(pin, pin_valid, probe, derived_target)?;
         if pin_valid {
             let pin_started = Instant::now();
             if let Some(m) = searcher.test_pinned_first() {
                 let mut out = std::io::stdout().lock();
-                writeln!(out, "{}", match_event(&m))?;
+                writeln!(out, "{}", match_event(&m, probe, derived_target))?;
                 let done_event = serde_json::json!({
                     "event": "done",
                     "mode": "pool",
+                    "probe": probe,
+                    "derived_target": derived_target,
                     "prefixes_done": 0u64,
                     "derived": searcher.progress.derived.load(Ordering::Relaxed),
                     "elapsed_ms": pin_started.elapsed().as_millis() as u64,
@@ -693,11 +767,21 @@ fn run_pool(args: &Args) -> cracker_core::Result<bool> {
 /// 1 when the budget is spent without one (same convention as the pool
 /// modes; the `done` event's `mode` tells them apart).
 fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
+    let probe = args.probe;
+    let derived_target = args.derived_target;
     let budget = args
         .random_draws
         .expect("dispatcher checked --random-draws");
     let seed = run_seed(args);
     let pin = pinned_candidate(args);
+    // Same permission boundary as the bounded pool: a non-corpus lottery
+    // target needs an explicit permission — --probe (address-only) or
+    // --derived-target (own-wallet) — so no unlabeled full-space run exists.
+    let corpus: Option<std::collections::HashSet<String>> = if probe || derived_target {
+        None
+    } else {
+        Some(embedded_corpus_addresses()?)
+    };
     let mut targets = Vec::new();
     for t in &args.targets {
         let parsed = parse_target(t)?;
@@ -706,6 +790,14 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
                 "target {t} is not a {} address",
                 args.address_type.label()
             )));
+        }
+        if let Some(corpus) = &corpus {
+            let normalized = parsed.kind().format_address(&parsed.bytes()).to_lowercase();
+            if !corpus.contains(&normalized) {
+                return Err(CrackerError::Other(format!(
+                    "target {t} is outside the embedded demo corpus — rerun with --probe (address-only feasibility lottery) or --derived-target (own-wallet run)"
+                )));
+            }
         }
         targets.push(Target {
             kind: parsed.kind(),
@@ -725,6 +817,7 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
             targets,
             passphrase: args.passphrase.clone(),
             pinned_first: pin.clone(),
+            discovery: discovery_watchlist(args)?,
         },
         !args.exhaustive,
     ));
@@ -733,6 +826,8 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
         let start_event = serde_json::json!({
             "event": "start",
             "mode": "lottery",
+            "probe": probe,
+            "derived_target": derived_target,
             "draw_budget": budget,
             "seed": seed,
             "workers": args.workers,
@@ -749,15 +844,17 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
     // runs, not a bug.
     if let Some(pin) = &pin {
         let pin_valid = cracker_core::bip39::validate(pin).is_ok();
-        emit_pinned_event(pin, pin_valid)?;
+        emit_pinned_event(pin, pin_valid, probe, derived_target)?;
         if pin_valid {
             let pin_started = Instant::now();
             if let Some(m) = searcher.test_pinned_first() {
                 let mut out = std::io::stdout().lock();
-                writeln!(out, "{}", match_event(&m))?;
+                writeln!(out, "{}", match_event(&m, probe, derived_target))?;
                 let done_event = serde_json::json!({
                     "event": "done",
                     "mode": "lottery",
+                    "probe": probe,
+                    "derived_target": derived_target,
                     "draws_done": 0u64,
                     "checksum_valid": 0u64,
                     "derived": searcher.progress.derived.load(Ordering::Relaxed),
@@ -778,6 +875,7 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
         let searcher = Arc::clone(&searcher);
         let done = Arc::clone(&done);
         let interval = Duration::from_millis(args.progress_ms);
+        let derived_target = args.derived_target; // Copy into the 'static ticker thread
         let mut last_draws = 0u64;
         let mut last_derived = 0u64;
         let mut last_tick = Instant::now();
@@ -804,7 +902,7 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
                 {
                     let mut out = std::io::stdout().lock();
                     for m in &newly {
-                        if writeln!(out, "{}", match_event(m)).is_err() {
+                        if writeln!(out, "{}", match_event(m, probe, derived_target)).is_err() {
                             ok = false;
                             break;
                         }
@@ -821,6 +919,8 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
                         let line = serde_json::json!({
                             "event": "progress",
                             "mode": "lottery",
+                            "probe": probe,
+                            "derived_target": derived_target,
                             "draws_done": draws,
                             "checksum_valid": searcher
                                 .progress
@@ -867,13 +967,15 @@ fn run_lottery(args: &Args) -> cracker_core::Result<bool> {
     {
         let mut out = std::io::stdout().lock();
         for m in &all_matches {
-            writeln!(out, "{}", match_event(m))?;
+            writeln!(out, "{}", match_event(m, probe, derived_target))?;
         }
         let draws = searcher.progress.draws.load(Ordering::Relaxed);
         let derived = searcher.progress.derived.load(Ordering::Relaxed);
         let done_event = serde_json::json!({
             "event": "done",
             "mode": "lottery",
+            "probe": probe,
+            "derived_target": derived_target,
             "draws_done": draws,
             "checksum_valid": searcher.progress.checksum_valid.load(Ordering::Relaxed),
             "derived": derived,

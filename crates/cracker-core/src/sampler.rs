@@ -12,6 +12,7 @@
 //! tested phrase genuinely derives the target address — the sampler uses the
 //! identical checksum -> PBKDF2 -> compare pipeline as the pooled engine.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -74,6 +75,13 @@ pub struct LotteryConfig {
     /// reproducible timing anchor). Tested via
     /// [`LotterySearcher::test_pinned_first`] exactly once per run.
     pub pinned_first: Option<String>,
+    /// Discovery watchlist: draws that genuinely derive one of these
+    /// addresses end the run as labeled discoveries (a real-world wallet,
+    /// not necessarily the user's requested target). Pins are exempt — the
+    /// calibration anchor tests requested targets only, so a watchlist
+    /// containing the demo-corpus addresses cannot end an address-only run
+    /// at candidate #1.
+    pub discovery: Vec<Target>,
 }
 
 /// One lottery searcher over the full space. `stop` is shared; with
@@ -84,6 +92,8 @@ pub struct LotterySearcher {
     pub stop: Arc<AtomicBool>,
     stop_on_match: bool,
     kinds: Vec<PathKind>,
+    /// Hash-indexed discovery watchlist for O(1) per-draw checks.
+    discovery_index: HashSet<Target>,
     matches: Mutex<Vec<Match>>,
 }
 
@@ -92,12 +102,14 @@ impl LotterySearcher {
         let mut kinds = config.targets.iter().map(|t| t.kind).collect::<Vec<_>>();
         kinds.sort();
         kinds.dedup();
+        let discovery_index = config.discovery.iter().copied().collect();
         Self {
             config: Arc::new(config),
             progress: Arc::default(),
             stop: Arc::default(),
             stop_on_match,
             kinds,
+            discovery_index,
             matches: Mutex::new(Vec::new()),
         }
     }
@@ -179,6 +191,31 @@ impl LotterySearcher {
                 self.progress.matches.fetch_add(1, Ordering::Relaxed);
                 if self.stop_on_match {
                     self.stop.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        // Discovery watchlist: a draw that genuinely derives a real-world
+        // address ends the run as a labeled discovery — never presented as
+        // the phrase for the user's requested target.
+        for kind in &self.kinds {
+            let bytes = match kind {
+                PathKind::Eth => derived.eth,
+                PathKind::BtcP2pkh => derived.btc_p2pkh,
+                PathKind::BtcBech32 => derived.btc_bech32,
+            };
+            if let Some(b) = bytes {
+                let candidate = Target {
+                    kind: *kind,
+                    bytes: b,
+                };
+                if self.discovery_index.contains(&candidate) {
+                    let mut m = build_match(&mnemonic, &self.config.passphrase, *kind, &b);
+                    m.discovery = true;
+                    self.matches.lock().expect("matches mutex poisoned").push(m);
+                    self.progress.matches.fetch_add(1, Ordering::Relaxed);
+                    if self.stop_on_match {
+                        self.stop.store(true, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -270,6 +307,7 @@ mod tests {
                 }],
                 passphrase: String::new(),
                 pinned_first: pinned.map(str::to_string),
+                discovery: Vec::new(),
             },
             true,
         )
@@ -427,5 +465,103 @@ mod tests {
         assert_eq!(matches[0].mnemonic, planted_phrase);
         assert_eq!(matches[0].address, address);
         assert_eq!(matches[0].path, parsed.kind());
+    }
+
+    fn sampler_with_discovery(target_addr: &str, watchlist: &[&str]) -> LotterySearcher {
+        let target = parse_target(target_addr).unwrap();
+        let discovery = watchlist
+            .iter()
+            .map(|a| {
+                let t = parse_target(a).unwrap();
+                Target {
+                    kind: t.kind(),
+                    bytes: t.bytes(),
+                }
+            })
+            .collect();
+        LotterySearcher::new(
+            LotteryConfig {
+                targets: vec![Target {
+                    kind: target.kind(),
+                    bytes: target.bytes(),
+                }],
+                passphrase: String::new(),
+                pinned_first: None,
+                discovery,
+            },
+            true,
+        )
+    }
+
+    const FOREIGN_ETH: &str = "0x1111111111111111111111111111111111111111";
+
+    #[test]
+    fn discovery_hit_stops_the_run_and_is_labeled() {
+        // Same planted-draw trick as the target test: the watchlist contains
+        // the address of a draw the seeded sequence will reach, so the
+        // discovery fires deterministically.
+        let seed = 0x501A;
+        let planted_draw = (0..100u64)
+            .find(|&d| phrase_for(seed, d).is_some())
+            .expect("a checksum-valid draw exists within 100 draws");
+        let planted_phrase = phrase_for(seed, planted_draw).unwrap();
+        let derived = crate::derive_addresses(&planted_phrase, "", &[PathKind::Eth]).unwrap();
+        let address = PathKind::Eth.format_address(&derived.eth.expect("eth derivation succeeded"));
+
+        let short = sampler_with_discovery(FOREIGN_ETH, &[&address]);
+        assert!(
+            short.run(planted_draw, seed).is_empty(),
+            "ordinary draws before the watchlisted one must not stop the run"
+        );
+        assert!(!short.stop.load(Ordering::Relaxed));
+
+        let covering = sampler_with_discovery(FOREIGN_ETH, &[&address]);
+        let matches = covering.run(planted_draw + 1, seed);
+        assert_eq!(matches.len(), 1);
+        assert!(
+            matches[0].discovery,
+            "a watchlist hit is labeled a discovery"
+        );
+        assert_eq!(matches[0].address, address);
+        assert_eq!(matches[0].mnemonic, planted_phrase);
+        assert!(
+            covering.stop.load(Ordering::Relaxed),
+            "a discovery freezes the engine exactly like a target match"
+        );
+    }
+
+    #[test]
+    fn pinned_calibration_is_exempt_from_discovery() {
+        // The calibration phrase derives KACIE_ETH; with that address on the
+        // watchlist and a foreign requested target, the pin must be tested
+        // (against requested targets only) and NOT end the run as a
+        // discovery — otherwise every address-only run would stop at
+        // candidate #1.
+        let kacie = parse_target(KACIE_ETH).unwrap();
+        let target = parse_target(FOREIGN_ETH).unwrap();
+        let searcher = LotterySearcher::new(
+            LotteryConfig {
+                targets: vec![Target {
+                    kind: target.kind(),
+                    bytes: target.bytes(),
+                }],
+                passphrase: String::new(),
+                pinned_first: Some(CALIBRATION.to_string()),
+                discovery: vec![Target {
+                    kind: kacie.kind(),
+                    bytes: kacie.bytes(),
+                }],
+            },
+            true,
+        );
+        assert!(
+            searcher.test_pinned_first().is_none(),
+            "a watchlisted pin must not be reported as a match"
+        );
+        assert_eq!(searcher.progress.derived.load(Ordering::Relaxed), 1);
+        assert!(
+            !searcher.stop.load(Ordering::Relaxed),
+            "the pin must not freeze a run it cannot genuinely match"
+        );
     }
 }

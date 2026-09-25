@@ -97,6 +97,7 @@ impl CrackerWorker {
                     // The pinned first candidate is tested once by the run
                     // owner before lanes start — never per worker lane.
                     pinned_first: None,
+                    discovery: Vec::new(),
                 },
                 true,
             ),

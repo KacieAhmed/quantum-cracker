@@ -717,6 +717,190 @@ describe("limited-keyspace mode (vary slots over the full wordlist)", () => {
   });
 });
 
+describe("any-address feasibility probe", () => {
+  const FOREIGN_ETH = "0x1111111111111111111111111111111111111111";
+  // Fixture-valid phrase — only used to prove probe + customWallet is refused
+  // before any derivation happens.
+  const PHRASE =
+    "abandon ability able about above absent absorb abstract absurd abuse access accident";
+
+  async function waitForFinal(
+    app: FastifyInstance,
+    runId: string,
+    timeoutMs = 15000,
+  ): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const res = await app.inject({ method: "GET", url: `/runs/${runId}` });
+      const report = res.json() as Record<string, unknown>;
+      if (report.status !== "running") return report;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("run did not finish in time");
+  }
+
+  it("refuses a foreign address without the probe flag", async () => {
+    const { app } = await makeApp();
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: FOREIGN_ETH,
+          workers: 1,
+        },
+      });
+      expect(started.statusCode).toBe(422);
+      expect(started.json().error).toContain("feasibility probe");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses probe combined with customWallet — no seed is involved", async () => {
+    const { app } = await makeApp();
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: FOREIGN_ETH,
+          workers: 1,
+          probe: true,
+          customWallet: { mnemonic: PHRASE },
+        },
+      });
+      expect(started.statusCode).toBe(422);
+      expect(started.json().error).toContain("no seed phrase is involved");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses probe in quantum mode — the toy sim is a separate demo", async () => {
+    const { app } = await makeApp();
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "quantum",
+          address: FOREIGN_ETH,
+          workers: 1,
+          probe: true,
+        },
+      });
+      expect(started.statusCode).toBe(422);
+      expect(started.json().error).toContain("classical bounded search");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("starts a disclosed probe and stamps the report; exhausts honestly", async () => {
+    process.env.FAKE_MATCH = "0";
+    const { app } = await makeApp();
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: FOREIGN_ETH,
+          workers: 1,
+          probe: true,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId, probe, targetNote } = started.json();
+      expect(probe.targetSource).toBe("any-address-probe");
+      expect(probe.searchedSpace).toBe("bundled-pooled-demo-space");
+      expect(probe.declaredSpaceSearched).toBe(false);
+      expect(probe.searchedRawCandidates).toBeGreaterThan(0);
+      expect(probe.searchedChecksumValid).toBeGreaterThan(0);
+      expect(targetNote).toBe(probe.disclosure);
+      expect(probe.disclosure).toContain("will not be found");
+      expect(probe.disclosure).toContain("2^128");
+
+      const report = await waitForFinal(app, runId);
+      // Honest bounded-search outcome: the demo space exhausts without a match.
+      expect(report.status).toBe("exhausted");
+      expect(report.match).toBeNull();
+      expect(report.address).toBe(FOREIGN_ETH);
+      expect(report.probe).toEqual(probe);
+    } finally {
+      delete process.env.FAKE_MATCH;
+      await app.close();
+    }
+  }, 20000);
+
+  it("claims a match during a probe — no provenance filtering", async () => {
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: FOREIGN_ETH,
+          workers: 1,
+          probe: true,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId, probe } = started.json();
+
+      const report = await waitForFinal(app, runId);
+      expect(report.status).toBe("matched");
+      expect(report.match).not.toBeNull();
+      // A match is claimed exactly when a tested phrase derives the target —
+      // probe provenance rides along but never suppresses it.
+      expect(report.address).toBe(FOREIGN_ETH);
+      expect(report.probe).toEqual(probe);
+      await nextMatching((m: ServerMessage) => m.type === "match");
+      ws.close();
+    } finally {
+      await app.close();
+    }
+  }, 20000);
+
+  it("keeps corpus targets running without probe provenance", async () => {
+    process.env.FAKE_MATCH = "0";
+    const { app } = await makeApp();
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: POOLED_ETH,
+          workers: 1,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId } = started.json();
+      const report = await waitForFinal(app, runId);
+      expect(report.status).toBe("exhausted");
+      expect(report.probe).toBeNull();
+      expect(report.customWallet).toBeNull();
+    } finally {
+      delete process.env.FAKE_MATCH;
+      await app.close();
+    }
+  }, 20000);
+});
+
 describe("static serving (single-port hosting)", () => {
   it("serves the console, keeps API routes first, and SPA-falls-back", async () => {
     const staticDir = await mkdtemp(path.join(os.tmpdir(), "qcracker-static-"));

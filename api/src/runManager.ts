@@ -7,6 +7,7 @@ import type {
   LaneState,
   MatchInfo,
   Mode,
+  ProbeProvenance,
   RunReport,
   RunStatus,
   ServerMessage,
@@ -26,6 +27,8 @@ export interface StartClassicParams {
   customWallet?: CustomWalletProvenance | null;
   /** Limited-keyspace pool config passed to every lane (--pool-json). */
   poolJsonPath?: string | null;
+  /** Any-address feasibility probe: passes --probe to lanes, stamps the report. */
+  probe?: ProbeProvenance | null;
   /** Called once when the run settles; the pool file's owner cleans it up. */
   onSettled?: () => void;
 }
@@ -113,6 +116,7 @@ export class RunManager {
       rawCandidates: params.rawCandidates,
       lanes: params.ranges.map((r, i) => emptyLane(i, r)),
       customWallet: params.customWallet ?? null,
+      probe: params.probe ?? null,
     });
     const run: ActiveRun = {
       report,
@@ -141,6 +145,15 @@ export class RunManager {
         addressType: params.addressType,
         progressMs: params.progressMs,
         poolJsonPath: params.poolJsonPath ?? null,
+        // Custom-wallet runs attest in-request derivation: the target came
+        // from the mnemonic in this request, so the engine's derived-target
+        // permission (not the probe label) applies.
+        ...(params.customWallet != null && params.probe == null
+          ? { derivedTarget: true }
+          : {}),
+        ...(params.probe === null || params.probe === undefined
+          ? {}
+          : { probe: true }),
       });
       run.procs.set(id, proc);
       void this.consumeLane(run, proc);
@@ -163,6 +176,7 @@ export class RunManager {
       rawCandidates: 2 ** params.bits,
       lanes: [lane],
       customWallet: params.customWallet ?? null,
+      probe: null,
     });
     const run: ActiveRun = {
       report,
@@ -389,6 +403,7 @@ function newReport(args: {
   rawCandidates: number;
   lanes: Array<LaneState & { start: number; end: number }>;
   customWallet: CustomWalletProvenance | null;
+  probe: ProbeProvenance | null;
 }): RunReport {
   return {
     runId: args.runId,
@@ -407,6 +422,7 @@ function newReport(args: {
     match: null,
     quantum: null,
     customWallet: args.customWallet,
+    probe: args.probe,
   };
 }
 

@@ -34,6 +34,7 @@ import type {
   CustomWalletProvenance,
   LimitedKeyspace,
   Mode,
+  ProbeProvenance,
   RunReport,
   ServerMessage,
 } from "./types.js";
@@ -91,6 +92,12 @@ interface CrackBody {
   quantumBits?: number;
   /** "Test with your own wallet": derive the target from this mnemonic. */
   customWallet?: CustomWalletBody;
+  /**
+   * Any-address feasibility probe: target a well-formed address with NO seed
+   * supplied. The run stays bounded to the bundled pooled demo space and the
+   * disclosure states up front that the declared address will not be found.
+   */
+  probe?: boolean;
 }
 
 const crackBodySchema = {
@@ -102,6 +109,7 @@ const crackBodySchema = {
     address: { type: "string", minLength: 1 },
     workers: { type: "integer", minimum: 1, maximum: 64 },
     force: { type: "boolean" },
+    probe: { type: "boolean" },
     quantumBits: { type: "integer", minimum: 2, maximum: QUANTUM_BITS_MAX },
     customWallet: {
       type: "object",
@@ -225,6 +233,23 @@ function limitedKeyspaceNote(
     `(~${keyspace.estimatedChecksumValid.toLocaleString("en-US")} checksum-valid candidates). ` +
     `Your true phrase is inside this space by construction, so a genuine match is reachable — ` +
     `a full sweep takes ${eta} at the estimated rate.`
+  );
+}
+
+/**
+ * Up-front disclosure for an any-address feasibility probe: the honest math
+ * stated before the run starts, per the standing framing — this address will
+ * not be found; the bounded demo space is searched, not the declared space.
+ */
+function probeDisclosure(doc: CorpusDoc): string {
+  return (
+    "Feasibility probe — this address will not be found. This run searches the bounded pooled demo space " +
+    `(${doc.space.total_prefixes.toLocaleString("en-US")} checksum-valid prefixes, ` +
+    `${doc.space.raw_candidates.toLocaleString("en-US")} raw assemblies), ` +
+    "NOT the real space behind the declared address (~2^128 seed phrases — infeasible by an enormous margin, " +
+    "and Grover's quadratic speedup would still need ~2^64 oracle calls). " +
+    "Exhaustion is the honest expected end state, not a failure. " +
+    "A match is claimed only if a tested phrase genuinely derives the target address — derivation equality, nothing else."
   );
 }
 
@@ -418,6 +443,15 @@ export async function buildApp(
         });
       }
 
+      // The feasibility probe is address-only: no seed phrase is involved, so
+      // it cannot be combined with the custom-wallet derivation flow.
+      if (body.probe === true && body.customWallet !== undefined) {
+        return reply.code(422).send({
+          error:
+            "the feasibility probe takes only an address — no seed phrase is involved; drop customWallet to probe an arbitrary address",
+        });
+      }
+
       // Resolve the search target. Custom-wallet mode: the target is ALWAYS
       // derived from the mnemonic supplied in this same request — a freeform
       // third-party address is never accepted, and a typed address is only a
@@ -427,6 +461,7 @@ export async function buildApp(
       let targetAddress: string;
       let targetKind: string;
       let customWallet: CustomWalletProvenance | null = null;
+      let probe: ProbeProvenance | null = null;
       let limitedKeyspace: (LimitedKeyspace & { prefixes: number }) | null =
         null;
       let poolJsonPath: string | null = null;
@@ -593,9 +628,45 @@ export async function buildApp(
         }
         targetAddress = verdict.normalized ?? address;
         targetKind = kind;
+
+        // Corpus targets run as-is; anything else needs the explicitly
+        // disclosed probe mode. The engine enforces the same rule (--probe),
+        // so a non-corpus search cannot run without the probe label.
+        if (body.probe === true) {
+          const doc = await ensureCorpus();
+          probe = {
+            targetSource: "any-address-probe",
+            searchedSpace: "bundled-pooled-demo-space",
+            searchedRawCandidates: doc.space.raw_candidates,
+            searchedChecksumValid: doc.space.total_prefixes,
+            declaredSpaceSearched: false,
+            disclosure: probeDisclosure(doc),
+          };
+        } else {
+          const doc = await ensureCorpus();
+          const normalized = targetAddress.toLowerCase();
+          const member = doc.wallets.some((w) =>
+            body.chain === "ethereum"
+              ? w.addresses.eth.toLowerCase() === normalized
+              : w.addresses.btc_p2pkh.toLowerCase() === normalized ||
+                w.addresses.btc_bech32.toLowerCase() === normalized,
+          );
+          if (!member) {
+            return reply.code(422).send({
+              error:
+                'this address is outside the bundled demo corpus — use the "Any address (feasibility probe)" mode, which discloses up front that the bounded demo search will not find it',
+            });
+          }
+        }
       }
 
       if (body.mode === "quantum") {
+        if (body.probe === true) {
+          return reply.code(422).send({
+            error:
+              "the feasibility probe is a classical bounded search of the pooled demo space — the toy Grover simulation is a separate demo",
+          });
+        }
         const bits = Math.min(
           body.quantumBits ?? QUANTUM_BITS_DEFAULT,
           QUANTUM_BITS_MAX,
@@ -659,6 +730,7 @@ export async function buildApp(
           rawCandidates,
           progressMs: options.progressMs ?? PROGRESS_MS,
           customWallet,
+          probe,
           poolJsonPath,
           ...(poolFileCleanup === null ? {} : { onSettled: poolFileCleanup }),
         },
@@ -693,6 +765,7 @@ export async function buildApp(
                     ),
             }
           : {}),
+        ...(probe !== null ? { probe, targetNote: probe.disclosure } : {}),
       });
     },
   );

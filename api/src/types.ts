@@ -78,6 +78,27 @@ export interface LimitedKeyspace {
   containsPhraseByConstruction: true;
 }
 
+/**
+ * Provenance of an any-address feasibility-probe run: the user typed a
+ * well-formed address with NO seed supplied. The run is a disclosed bounded
+ * probe of the bundled pooled demo space — never the declared address's real
+ * space — and a match is claimed exactly when a tested phrase derives the
+ * target (derivation equality, nothing else counts).
+ */
+export interface ProbeProvenance {
+  targetSource: "any-address-probe";
+  /** The bounded space actually searched: the bundled pooled demo space. */
+  searchedSpace: "bundled-pooled-demo-space";
+  /** Raw assemblies of the space that was searched. */
+  searchedRawCandidates: number;
+  /** Checksum-valid candidates of the space that was searched. */
+  searchedChecksumValid: number;
+  /** The declared address's real space was NOT searched. */
+  declaredSpaceSearched: false;
+  /** Up-front honest framing: this address will not be found; here's the math. */
+  disclosure: string;
+}
+
 export type RunStatus =
   | "running"
   | "matched"
@@ -112,6 +133,8 @@ export interface RunReport {
   quantum: unknown | null;
   /** Set when the run's target was derived from a user-supplied seed phrase. */
   customWallet: CustomWalletProvenance | null;
+  /** Set when the run is an explicitly disclosed any-address feasibility probe. */
+  probe: ProbeProvenance | null;
 }
 
 /** WS messages the API broadcasts. */

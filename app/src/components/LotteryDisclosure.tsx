@@ -20,7 +20,9 @@ interface LotteryDisclosureProps {
  * Never softened: the expected wait is the teaching point.
  */
 export function LotteryDisclosure({ pinnedIsUserPhrase }: LotteryDisclosureProps) {
-  const odds = 1 / lotteryOddsOneInPerHour();
+  // lotteryOddsOneInPerHour() IS the "1 in X" denominator (≈6.7×10^31) —
+  // render it directly; inverting it here would print the raw probability.
+  const odds = lotteryOddsOneInPerHour();
   const waitYears = sci(lotteryExpectedWaitYears(), 1);
   return (
     <div className="keyspace-disclosure">

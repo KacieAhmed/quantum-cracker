@@ -8,6 +8,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Obvious preview URLs (*.e2b.app) serve this dev server from outside;
+    // vite's host check would otherwise block them.
+    allowedHosts: [".e2b.app"],
     proxy: {
       "/system": apiTarget,
       "/corpus": apiTarget,

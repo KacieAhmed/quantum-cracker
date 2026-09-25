@@ -12,6 +12,7 @@ export default defineConfig({
       "/system": apiTarget,
       "/corpus": apiTarget,
       "/validate": apiTarget,
+      "/derive": apiTarget,
       "/crack": apiTarget,
       "/runs": apiTarget,
       // WebSocket: the live run feed.

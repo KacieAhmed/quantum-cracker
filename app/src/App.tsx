@@ -283,6 +283,7 @@ export default function App() {
           {walletMode ? (
             <CustomWalletPanel
               chain={chain}
+              onChain={setChain}
               disabled={running}
               onDerived={(mnemonic, passphrase, expectedAddress, derived) =>
                 setCustomWallet({ mnemonic, passphrase, expectedAddress, derived })

@@ -106,6 +106,19 @@ export interface LaneSpec extends LaneRange {
    * exactly once per run.
    */
   pinnedFirst?: string | null;
+  /**
+   * Feasibility-probe permission: required by the engine for targets outside
+   * the embedded demo corpus, and the same flag stamps every lane event with
+   * "probe": true — the label is inseparable from the permission.
+   */
+  probe?: boolean;
+  /**
+   * Derived-target permission: the API attests this lane's target was derived
+   * from a mnemonic supplied in the same request (own-wallet flow) — allows
+   * non-corpus targets without probe semantics; stamped "derived_target": true
+   * on events. Mutually exclusive with probe.
+   */
+  derivedTarget?: boolean;
 }
 
 export interface LaneProcess {
@@ -155,6 +168,12 @@ export function spawnLane(cliPath: string, spec: LaneSpec): LaneProcess {
   args.push("--pinned-first", spec.pinnedFirst ?? "");
   if (spec.poolJsonPath !== undefined && spec.poolJsonPath !== null) {
     args.push("--pool-json", spec.poolJsonPath);
+  }
+  if (spec.probe === true) {
+    args.push("--probe");
+  }
+  if (spec.derivedTarget === true) {
+    args.push("--derived-target");
   }
   const child = spawn(cliPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   return {

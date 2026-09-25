@@ -171,6 +171,36 @@ const count = Number(flag("count", "0")) || SPACE;
 const progressMs = Number(flag("progress-ms", "100"));
 const target = targets[0];
 
+// Probe permission gate: mirrors the real engine. A target outside the
+// embedded demo corpus requires --probe over the bundled pool; the same flag
+// stamps every emitted event with "probe": true.
+const probe = args.includes("--probe");
+const poolJsonPathGate = flag("pool-json", null);
+const derivedTarget = args.includes("--derived-target");
+if (probe && derivedTarget) {
+  console.error(
+    "error: --probe and --derived-target are mutually exclusive permissions",
+  );
+  process.exit(2);
+}
+if (poolJsonPathGate === null && !probe && !derivedTarget) {
+  const corpus = [
+    "0x262b24744833ff3c28e174a1b7a5094c3428008b",
+    "1d9fqwfwjftkkuwdqpew36kfwsrxpktiph",
+    "bc1qm0es3luvytx7uy2jjr56g72s0ksfd74xz4ljky",
+    MATCH_ADDRESSES.eth.toLowerCase(),
+    MATCH_ADDRESSES.btc_p2pkh.toLowerCase(),
+    MATCH_ADDRESSES.btc_bech32.toLowerCase(),
+  ];
+  const normalized = (target ?? "").toLowerCase();
+  if (!corpus.includes(normalized)) {
+    console.error(
+      `error: target ${target} is outside the embedded demo corpus — rerun with --probe to disclose a bounded feasibility probe`,
+    );
+    process.exit(2);
+  }
+}
+
 // Limited-keyspace template: the space is the pool's prefix count, not the
 // bundled corpus space. Same math as the real engine's PoolSearch.
 const poolJsonPath = flag("pool-json", null);
@@ -186,7 +216,7 @@ if (poolJsonPath !== null) {
 }
 
 const end = Math.min(start + count, space);
-console.log(JSON.stringify({ event: "start", total_prefixes: space, raw_candidates: rawCandidates, start, end, workers: Number(flag("workers", "1")), address_type: addressType, targets }));
+console.log(JSON.stringify({ event: "start", total_prefixes: space, raw_candidates: rawCandidates, start, end, workers: Number(flag("workers", "1")), address_type: addressType, targets, probe, derived_target: derivedTarget }));
 
 const step = Math.max(1, Math.ceil((end - start) / TICKS));
 let done = start;
@@ -204,6 +234,8 @@ const tick = setInterval(() => {
     matches: willMatch ? 1 : 0,
     frontier_prefix: frontier,
     frontier_phrase: `phrase for ordinal ${frontier}`,
+    probe,
+    derived_target: derivedTarget,
   }));
   if (willMatch) {
     const canonicalPath =
@@ -212,12 +244,14 @@ const tick = setInterval(() => {
       event: "match",
       derivation_path: canonicalPath,
       match: { mnemonic: MATCH_MNEMONIC, path: canonicalPath, address: target, all_addresses: MATCH_ADDRESSES },
+      probe,
+      derived_target: derivedTarget,
     }));
     clearInterval(tick);
     process.exit(0);
   }
   if (done >= end) {
-    console.log(JSON.stringify({ event: "done", prefixes_done: derived, derived, elapsed_ms: 5, derived_per_sec: 500, matches: 0, recovered: null }));
+    console.log(JSON.stringify({ event: "done", prefixes_done: derived, derived, elapsed_ms: 5, derived_per_sec: 500, matches: 0, recovered: null, probe, derived_target: derivedTarget }));
     clearInterval(tick);
     process.exit(1); // exhausted without a match
   }

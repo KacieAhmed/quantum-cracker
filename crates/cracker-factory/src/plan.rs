@@ -3,13 +3,15 @@
 //! The planner works in **raw-candidate units** over a half-open interval
 //! `[start, start + len)` represented as `u256` endpoints, so any keyspace
 //! that fits in 256 bits can be planned — even though the current engine only
-//! ever searches the pooled demo space (2^24 raw assemblies). Representing or
-//! partitioning a huge keyspace says nothing about being able to search it.
+//! ever searches the pooled demo spaces (2^24-2^25 raw assemblies).
+//! Representing or partitioning a huge keyspace says nothing about being able
+//! to search it.
 //!
 //! Ranges are aligned to the enumeration's assembly granularity: the engine
-//! enumerates 16 raw assemblies per prefix ordinal, so a worker range maps
-//! onto whole prefix ordinals only when its start and length are multiples of
-//! the pool size. [`RangePlan::split_aligned`] guarantees this.
+//! enumerates 16 raw assemblies per prefix ordinal in both demo spaces (the
+//! 12th-word pool is 16 words in each), so a worker range maps onto whole
+//! prefix ordinals only when its start and length are multiples of the pool
+//! size. [`RangePlan::split_aligned`] guarantees this.
 
 use std::fmt;
 
@@ -395,45 +397,52 @@ fn parse_u256(s: &str) -> Result<U256, &'static str> {
 mod tests {
     use super::*;
 
-    const POOL_LEN: u64 = 16; // raw assemblies per prefix ordinal (corpus pool)
-    const RAW_SPACE_LEN: u64 = 16_777_216; // 16^6 = 2^24
+    const POOL_LEN: u64 = 16; // raw assemblies per prefix ordinal (both demo spaces)
+    const RAW_SPACE_LEN: u64 = 33_554_432; // 2^21 x 16 = 2^25 (default varied-slot space)
+    const LEGACY_RAW_SPACE_LEN: u64 = 16_777_216; // 16^6 = 2^24 (legacy fixed-slot space)
 
     fn raw_space() -> Range256 {
         Range256::new(0, U256::from(RAW_SPACE_LEN))
     }
 
     #[test]
-    fn split_covers_the_real_demo_space_for_n_one_to_one_thousand() {
-        let space = raw_space();
-        let g = U256::from(POOL_LEN);
-        for n in 1..=1000usize {
-            let plan = RangePlan::split_aligned(space.clone(), n, g).unwrap();
-            let proof = plan.coverage_proof();
-            assert!(
-                proof.exact_cover(),
-                "n={n}: gaps={:?} overlaps={:?} total={}",
-                proof.gaps,
-                proof.overlaps,
-                proof.total_covered
-            );
-            assert_eq!(proof.total_covered, U256::from(RAW_SPACE_LEN));
-            // Sorted, contiguous, aligned: every non-final start+len is a
-            // multiple of 16 and equals the next start.
-            let sorted = proof.ranges;
-            assert_eq!(sorted.len(), n.min(RAW_SPACE_LEN as usize));
-            for (i, w) in sorted.iter().enumerate() {
-                assert_eq!(
-                    w.start % g,
-                    U256::from(0u8),
-                    "n={n} worker {i}: unaligned start"
+    fn split_covers_the_real_demo_spaces_for_n_one_to_one_thousand() {
+        for raw_len in [RAW_SPACE_LEN, LEGACY_RAW_SPACE_LEN] {
+            let space = Range256::new(0, U256::from(raw_len));
+            let g = U256::from(POOL_LEN);
+            for n in 1..=1000usize {
+                let plan = RangePlan::split_aligned(space.clone(), n, g).unwrap();
+                let proof = plan.coverage_proof();
+                assert!(
+                    proof.exact_cover(),
+                    "raw_len={raw_len} n={n}: gaps={:?} overlaps={:?} total={}",
+                    proof.gaps,
+                    proof.overlaps,
+                    proof.total_covered
                 );
-                if i + 1 < sorted.len() {
+                assert_eq!(proof.total_covered, U256::from(raw_len));
+                // Sorted, contiguous, aligned: every non-final start+len is a
+                // multiple of 16 and equals the next start.
+                let sorted = proof.ranges;
+                assert_eq!(sorted.len(), n.min(raw_len as usize));
+                for (i, w) in sorted.iter().enumerate() {
                     assert_eq!(
-                        w.len % g,
+                        w.start % g,
                         U256::from(0u8),
-                        "n={n} worker {i}: unaligned len"
+                        "raw_len={raw_len} n={n} worker {i}: unaligned start"
                     );
-                    assert_eq!(w.end(), sorted[i + 1].start, "n={n}: not contiguous at {i}");
+                    if i + 1 < sorted.len() {
+                        assert_eq!(
+                            w.len % g,
+                            U256::from(0u8),
+                            "raw_len={raw_len} n={n} worker {i}: unaligned len"
+                        );
+                        assert_eq!(
+                            w.end(),
+                            sorted[i + 1].start,
+                            "raw_len={raw_len} n={n}: not contiguous at {i}"
+                        );
+                    }
                 }
             }
         }

@@ -29,6 +29,34 @@ fn corpus_searcher(target_address: &str) -> Searcher {
 const TARGET_ETH: &str = "0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5";
 const TARGET_PREFIX_ORDINAL: u64 = (((7u64 * 16 + 11) * 16 + 5) * 16 + 7) * 16 + 9;
 
+fn varied_pool() -> PoolSearch {
+    let doc: WalletsFileJson = serde_json::from_str(cracker_core::WALLETS_JSON).unwrap();
+    let varied = doc
+        .pooled_varied
+        .as_ref()
+        .expect("varied pooled wallet in the embedded corpus");
+    PoolSearch::from_config(&varied.pool_config, "").unwrap()
+}
+
+fn varied_searcher(target_address: &str) -> Searcher {
+    let pool = varied_pool();
+    let target = parse_target(target_address).unwrap();
+    Searcher::new(
+        SearchConfig {
+            pool,
+            targets: vec![Target {
+                kind: target.kind(),
+                bytes: target.bytes(),
+            }],
+        },
+        true,
+    )
+}
+
+const VARIED_TARGET_ETH: &str = "0x5a92f105dBC635b8fe707dfAA023234aA243c734";
+const VARIED_TARGET_MNEMONIC: &str =
+    "ocean raven hill winter candy mango harbor echo orbit marble velvet abuse";
+
 #[test]
 fn engine_recovers_the_target_from_its_prefix_ordinal() {
     let searcher = corpus_searcher(TARGET_ETH);
@@ -92,4 +120,50 @@ fn pool_dimensions_match_the_documented_contract() {
     assert_eq!(pool.raw_candidates(), 16_777_216); // 16^6 = 2^24
     assert_eq!(pool.prefix_positions(), vec![1, 3, 5, 7, 9]);
     assert_eq!(pool.passphrase(), "");
+}
+
+#[test]
+fn varied_engine_recovers_its_target_from_the_display_ordinal() {
+    let pool = varied_pool();
+    let display = pool
+        .ordinal_of(VARIED_TARGET_MNEMONIC)
+        .expect("varied target lies inside its own space");
+    let searcher = varied_searcher(VARIED_TARGET_ETH);
+    let matches = searcher.run_range(display..display + 1);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].mnemonic, VARIED_TARGET_MNEMONIC);
+    assert_eq!(matches[0].address, VARIED_TARGET_ETH);
+    // The hit's BTC addresses cross-confirm the corpus values.
+    assert_eq!(
+        matches[0].all_addresses.btc_p2pkh,
+        "12itzhrtpyreD9mtCSam8BibP9EiXhzAYh"
+    );
+    assert_eq!(
+        matches[0].all_addresses.btc_bech32,
+        "bc1qvkvq6usf8synt57sj890ewuh282t7qyn6jlkzp"
+    );
+}
+
+#[test]
+fn varied_tested_phrases_vary_in_every_slot_from_the_first_snapshot() {
+    // The regression Kacie caught: the legacy space's first tested phrases
+    // all share six pinned words. The varied space must show at least two
+    // distinct words in EVERY slot across the first 64 tested ordinals.
+    let pool = varied_pool();
+    let mut slot_words: [std::collections::BTreeSet<String>; 12] = Default::default();
+    for display in 0..64u64 {
+        let phrase = pool
+            .candidate_at(display)
+            .expect("display ordinal has a candidate");
+        for (slot, word) in phrase.split_whitespace().enumerate() {
+            slot_words[slot].insert(word.to_string());
+        }
+    }
+    for (i, words) in slot_words.iter().enumerate() {
+        assert!(
+            words.len() >= 2,
+            "slot {} shows a single word across the first 64 tested phrases: {words:?}",
+            i + 1
+        );
+    }
 }

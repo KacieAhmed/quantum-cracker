@@ -185,7 +185,13 @@ fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
         }
         None => {
             let doc: WalletsFileJson = serde_json::from_str(cracker_core::WALLETS_JSON)?;
-            PoolSearch::from_config(&doc.pooled.pool_config, &args.passphrase)
+            // The varied-slot space is the default classic demo target; the
+            // legacy fixed-slot pool stays available via --pool-json.
+            let wallet = doc
+                .pooled_varied
+                .as_ref()
+                .unwrap_or(&doc.pooled);
+            PoolSearch::from_config(&wallet.pool_config, &args.passphrase)
         }
     }
 }
@@ -283,20 +289,31 @@ fn list_targets() -> cracker_core::Result<serde_json::Value> {
             },
         }));
     }
-    let pooled = &doc["pooled_demo_wallet"];
-    out.push(serde_json::json!({
-        "id": "pooled-demo-wallet",
-        "label": "pooled-demo-wallet",
-        "searchable": true,
-        "addresses": {
-            "eth": pooled["eth"]["address"],
-            "btc_p2pkh": pooled["btc_p2pkh"]["address"],
-            "btc_bech32": pooled["btc_bech32"]["address"],
-        },
-    }));
+    // The varied-slot pool is the default classic demo target (searchable);
+    // the legacy fixed-slot pool is kept as a second corpus option but is not
+    // reachable from the default search space, so it is listed unsearchable.
+    for (key, id, searchable) in [
+        ("pooled_demo_wallet_varied", "pooled-demo-wallet-varied", true),
+        ("pooled_demo_wallet", "pooled-demo-wallet", false),
+    ] {
+        let wallet = &doc[key];
+        if wallet.is_null() {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "id": id,
+            "label": id,
+            "searchable": searchable,
+            "addresses": {
+                "eth": wallet["eth"]["address"],
+                "btc_p2pkh": wallet["btc_p2pkh"]["address"],
+                "btc_bech32": wallet["btc_bech32"]["address"],
+            },
+        }));
+    }
     // Keyspace dimensions of the pooled search space: the API splits these
     // prefix ordinals into disjoint worker ranges before spawning lanes.
-    let pool_cfg: PoolConfigJson = serde_json::from_value(pooled["pool_config"].clone())
+    let pool_cfg: PoolConfigJson = serde_json::from_value(doc["pooled_demo_wallet_varied"]["pool_config"].clone())
         .map_err(|e| CrackerError::Other(format!("embedded pool_config: {e}")))?;
     let pool = PoolSearch::from_config(&pool_cfg, "")?;
     Ok(serde_json::json!({
@@ -304,6 +321,8 @@ fn list_targets() -> cracker_core::Result<serde_json::Value> {
         "space": {
             "total_prefixes": pool.total_prefixes(),
             "raw_candidates": pool.raw_candidates(),
+            "traversal": if pool.shuffled() { "shuffled" } else { "sequential" },
+            "description": doc["pooled_demo_wallet_varied"]["pool_config"]["description"],
         },
     }))
 }

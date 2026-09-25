@@ -205,5 +205,100 @@
         "btc_bech32": "m/84'/0'/0'/0/0"
       }
     }
+  },
+  "pooled_demo_wallet_varied": {
+    "mnemonic": "ocean raven hill winter candy mango harbor echo orbit marble velvet abuse",
+    "passphrase": "",
+    "seed_hex": "bba93019e8932cdbf9f9ca96c363ebea37da82769816414e2f3a29d627ddfb215b491f581f902b49b6b786583c812d2f8687f00783c4d33a78f017a9a51de985",
+    "bip32_master_xprv": "xprv9s21ZrQH143K2Kyn7ha6rmbxvt3LCtNTXJBYN7JSiuqdRWew8LcCX5mWJ9AV93wfeoiWc6P83akHejyKTDoSuXYLxYL3QgaZfXBVbRnNELW",
+    "bip32_master_xpub": "xpub661MyMwAqRbcEp4FDj77DuYhUuspcM6JtX79AVi4HFNcJJz5fsvT4t5z9QH6eWfRPzQxTdGp4Sgb4oWzvaZimPVeQGiEkFAPAejNmA5GthY",
+    "eth": {
+      "path": "m/44'/60'/0'/0/0",
+      "address": "0x5a92f105dBC635b8fe707dfAA023234aA243c734",
+      "private_key_hex": "02ab0c2be4d909db53a3407cd7655b13a9de851a59bdcf770093110d709b77fd"
+    },
+    "btc_p2pkh": {
+      "path": "m/44'/0'/0'/0/0",
+      "address": "12itzhrtpyreD9mtCSam8BibP9EiXhzAYh",
+      "wif": "L5VxTKLxiqkUmYVsu8r2yH76LEX247xH1iqBG7WBfYiF7bra39wA"
+    },
+    "btc_bech32": {
+      "path": "m/84'/0'/0'/0/0",
+      "address": "bc1qvkvq6usf8synt57sj890ewuh282t7qyn6jlkzp"
+    },
+    "label": "pooled-demo-wallet-varied",
+    "pool_config": {
+      "description": "12-word mnemonic; EVERY word slot (1-12) varies over its own pool: slots 1-11 over small pools (one 2-word slot, ten 4-word slots), slot 12 over wordlist indices 0-15 (the first 16 BIP-39 words), which share one high-7-bit block and cover each 4-bit checksum nibble exactly once. Raw assemblies: 2^21 x 16 = 2^25 = 33,554,432; every prefix has exactly one checksum-valid completion: 2^21 = 2,097,152 valid phrases. The engine walks the space in shuffled order under a fixed public traversal key.",
+      "slot_pools_1_indexed": {
+        "1": ["ocean", "river"],
+        "2": ["panda", "raven", "tiger", "zebra"],
+        "3": ["canyon", "hill", "meadow", "valley"],
+        "4": ["autumn", "spring", "summer", "winter"],
+        "5": ["candy", "honey", "lemon", "sugar"],
+        "6": ["grape", "mango", "olive", "palm"],
+        "7": ["anchor", "harbor", "paddle", "saddle"],
+        "8": ["drum", "echo", "piano", "violin"],
+        "9": ["orbit", "radar", "rocket", "solar"],
+        "10": ["crystal", "fossil", "marble", "stone"],
+        "11": ["cotton", "silk", "velvet", "wool"],
+        "12": ["abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid"]
+      },
+      "slot_pool_wordlist_indices_1_indexed": {
+        "1": [1223, 1494],
+        "2": [1275, 1427, 1807, 2044],
+        "3": [270, 861, 1101, 1927],
+        "4": [125, 1689, 1737, 2016],
+        "5": [266, 873, 1022, 1734],
+        "6": [814, 1081, 1233, 1274],
+        "7": [67, 840, 1270, 1518],
+        "8": [540, 559, 1312, 1954],
+        "9": [1247, 1413, 1499, 1651],
+        "10": [426, 735, 1085, 1714],
+        "11": [390, 1604, 1936, 2026],
+        "12": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      },
+      "traversal": "shuffled",
+      "target_slot_words_1_indexed": {
+        "1": "ocean",
+        "2": "raven",
+        "3": "hill",
+        "4": "winter",
+        "5": "candy",
+        "6": "mango",
+        "7": "harbor",
+        "8": "echo",
+        "9": "orbit",
+        "10": "marble",
+        "11": "velvet",
+        "12": "abuse"
+      },
+      "target_slot_pool_indices_1_indexed": {
+        "1": 0,
+        "2": 1,
+        "3": 1,
+        "4": 3,
+        "5": 0,
+        "6": 1,
+        "7": 1,
+        "8": 1,
+        "9": 0,
+        "10": 2,
+        "11": 2,
+        "12": 9
+      },
+      "target_native_prefix_ordinal": 378186,
+      "search_space": {
+        "total_candidates": 33554432,
+        "expression": "2^21 x 16 = 2^25",
+        "checksum_valid_phrases": 2097152,
+        "note": "every word slot draws from its own pool, so no slot is pinned; the slot-12 pool (wordlist indices 0..15) covers all 16 checksum nibbles in one aligned block, so each of the 2^21 first-11-word prefixes has exactly one valid 12th-word completion. Shuffled traversal order is applied by the engine.",
+        "sampled_verification": "10,000 random prefixes, each had exactly one valid pool completion (PASS)"
+      },
+      "derivation_paths": {
+        "eth": "m/44'/60'/0'/0/0",
+        "btc_p2pkh": "m/44'/0'/0'/0/0",
+        "btc_bech32": "m/84'/0'/0'/0/0"
+      }
+    }
   }
 }

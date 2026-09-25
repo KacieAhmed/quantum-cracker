@@ -13,9 +13,12 @@
 //!          -> exact byte equality against the target (doc section 9.2)
 //! ```
 //!
-//! Candidate enumeration is specialized to the pooled search space of the demo
-//! wallet corpus: fixed words at chosen positions, a word pool elsewhere
-//! (16^6 = 2^24 raw assemblies, 2^20 checksum-valid candidates).
+//! Candidate enumeration is specialized to the pooled search spaces of the
+//! demo wallet corpus: the legacy fixed-slot space (six pinned positions, a
+//! shared 16-word pool elsewhere: 16^6 = 2^24 raw assemblies, 2^20
+//! checksum-valid candidates) and the varied-slot space, where every word
+//! slot draws from its own pool (2^25 raw assemblies, 2^21 checksum-valid
+//! candidates, walked in a reproducible shuffled order).
 //!
 //! Every intermediate value is anchored against the published test vectors in
 //! `test-vectors/` (see the integration tests).
@@ -43,8 +46,9 @@ pub use validate::TargetAddr;
 /// computed 160/224-bit entries and the empty-passphrase demo anchor).
 pub const BIP39_VECTORS_JSON: &str = include_str!("../test-vectors/bip39.json");
 
-/// Embedded demo wallet corpus (4 random wallets + the pooled 2^24-space target).
-/// The CLI uses this as its built-in default search space.
+/// Embedded demo wallet corpus (4 random wallets + the legacy pooled 2^24-space
+/// target + the varied-slot pooled 2^25-space target, the default classic demo
+/// search space). The CLI uses this as its built-in default search space.
 pub const WALLETS_JSON: &str = include_str!("../test-vectors/wallets.json");
 
 /// Official BIP-39 English wordlist (2048 words, sorted), from bitcoin/bips.

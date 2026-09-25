@@ -1,23 +1,30 @@
 //! The bundled demo-wallet corpus is the only valid target set.
 //!
-//! Addresses come from the Demo Wallet Corpus document (five self-generated
+//! Addresses come from the Demo Wallet Corpus document (six self-generated
 //! throwaway wallets; see the project pin). The factory refuses any target
-//! outside this list: the engine only searches the pooled demo space, so a
-//! target from anywhere else could never be found and a run would be a lie.
+//! outside this list: the engine only searches the bundled pooled demo
+//! spaces, so a target from anywhere else could never be found and a run
+//! would be a lie.
 //!
-//! Note only the pooled wallet's addresses can ever match: the other four
-//! wallets are corpus members the engine round-trips against, not members of
-//! the pooled space.
+//! Only the varied-slot pooled wallet's addresses can ever match (its space
+//! is the default demo target): the legacy fixed-slot pooled wallet and the
+//! four random wallets are corpus members the engine round-trips against,
+//! not members of the default search space — runs against them end
+//! exhausted, the honest demonstration of keyspace scale.
 
 use serde::Serialize;
 
 /// (address, engine `--address-type`) for every address in the corpus.
 pub const CORPUS_ADDRESSES: &[(&str, &str)] = &[
-    // pooled-demo-wallet (findable in the pooled space)
+    // pooled-demo-wallet-varied (findable in the default varied-slot space)
+    ("0x5a92f105dBC635b8fe707dfAA023234aA243c734", "eth"),
+    ("12itzhrtpyreD9mtCSam8BibP9EiXhzAYh", "btc-p2pkh"),
+    ("bc1qvkvq6usf8synt57sj890ewuh282t7qyn6jlkzp", "btc-bech32"),
+    // pooled-demo-wallet (legacy fixed-slot space, not the default target)
     ("0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5", "eth"),
     ("16HxxyAQvA3AKThfcJGxSqKJ3Hs9RnTgHp", "btc-p2pkh"),
     ("bc1qnm5mmckh08leuwsygfre0ls0vp7vstdju0wm57", "btc-bech32"),
-    // demo-wallet-1 .. demo-wallet-4 (not in the pooled space)
+    // demo-wallet-1 .. demo-wallet-4 (not in a pooled space)
     ("0x262B24744833FF3c28e174A1b7A5094C3428008b", "eth"),
     ("1D9fQWfwJftkkUWdQpeW36KFwsRxPkTiPh", "btc-p2pkh"),
     ("bc1qm0es3luvytx7uy2jjr56g72s0ksfd74xz4ljky", "btc-bech32"),
@@ -32,11 +39,13 @@ pub const CORPUS_ADDRESSES: &[(&str, &str)] = &[
     ("bc1qk3l5skgjf4cdygy9m5u90qztqqztss4rck2f9", "btc-bech32"),
 ];
 
-/// The engine's pooled-space constants (demo corpus). The factory plans with
-/// these and asserts the engine's own `start` events agree at runtime.
+/// The engine's pooled-space constants (default demo space: the varied-slot
+/// pool). The factory plans with these and asserts the engine's own `start`
+/// events agree at runtime. The legacy fixed-slot space is 1,048,576 prefixes
+/// / 16,777,216 raw — half the size, same 16-assembly granularity.
 pub const POOL_LEN_RAW: u64 = 16; // raw assemblies per prefix ordinal
-pub const TOTAL_PREFIXES: u64 = 1_048_576; // 16^5 checksum-valid prefixes
-pub const RAW_SPACE: u64 = 16_777_216; // 16^6 = 2^24 raw assemblies
+pub const TOTAL_PREFIXES: u64 = 2_097_152; // 2^21 checksum-valid prefixes
+pub const RAW_SPACE: u64 = 33_554_432; // 2^21 x 16 = 2^25 raw assemblies
 
 /// Derivation path group an address type maps to (engine `--address-type`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

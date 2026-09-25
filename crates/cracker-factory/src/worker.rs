@@ -536,18 +536,19 @@ mod tests {
 
     #[test]
     fn parses_the_engine_s_real_event_shapes() {
-        // Sampled verbatim from cracker-cli output on the pooled target.
+        // Sampled verbatim from cracker-cli output on the varied-slot pooled
+        // target (the default demo space).
         let start = parse_event(
-            r#"{"address_type":"eth","end":505210,"event":"start","raw_candidates":16777216,"start":505209,"targets":["0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5"],"total_prefixes":1048576,"workers":null}"#,
+            r#"{"address_type":"eth","end":2097152,"event":"start","raw_candidates":33554432,"start":0,"targets":["0x5a92f105dBC635b8fe707dfAA023234aA243c734"],"total_prefixes":2097152,"workers":8}"#,
         )
         .unwrap();
         assert_eq!(
             start,
             EngineEvent::Start {
                 total_prefixes: TOTAL_PREFIXES,
-                raw_candidates: 16_777_216,
-                start: 505_209,
-                end: 505_210,
+                raw_candidates: 33_554_432,
+                start: 0,
+                end: 2_097_152,
             }
         );
 

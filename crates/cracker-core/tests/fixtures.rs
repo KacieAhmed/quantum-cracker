@@ -1,8 +1,8 @@
 //! Acceptance round-trips over the embedded fixtures (test-vectors/):
 //! every published BIP-39 vector (24), the two computed 160/224-bit entries,
-//! the famous empty-passphrase wallet, and all five demo-wallet-corpus
-//! wallets (four random + the pooled target) must reproduce seed, master
-//! xprv/xpub, and every address exactly.
+//! the famous empty-passphrase wallet, and all six demo-wallet-corpus
+//! wallets (four random + the legacy pooled target + the varied-slot pooled
+//! target) must reproduce seed, master xprv/xpub, and every address exactly.
 
 use cracker_core::bip32;
 use cracker_core::derive::{derive_addresses, DerivedAddresses, PathKind};
@@ -122,8 +122,12 @@ fn all_demo_wallets_match_the_corpus_exactly() {
     let doc = doc(WALLETS_JSON);
     let wallets = doc["wallets"].as_array().expect("wallets array");
     let pooled = &doc["pooled_demo_wallet"];
+    let pooled_varied = &doc["pooled_demo_wallet_varied"];
     assert_eq!(wallets.len(), 4, "four random demo wallets");
-    for w in wallets.iter().chain(std::iter::once(pooled)) {
+    for w in wallets
+        .iter()
+        .chain([pooled, pooled_varied])
+    {
         let label = w
             .get("label")
             .and_then(|l| l.as_str())

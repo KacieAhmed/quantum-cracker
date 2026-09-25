@@ -137,7 +137,7 @@ fn famous_empty_passphrase_wallet_full_round_trip() {
 }
 
 #[test]
-fn all_five_demo_wallets_round_trip() {
+fn all_six_demo_wallets_round_trip() {
     let doc = fixture("wallets.json");
     let wallets = doc["wallets"].as_array().expect("wallets array").clone();
     assert_eq!(wallets.len(), 4, "corpus carries four uniform wallets");
@@ -145,4 +145,5 @@ fn all_five_demo_wallets_round_trip() {
         check_wallet(wallet, "demo-wallet");
     }
     check_wallet(&doc["pooled_demo_wallet"], "pooled-demo-wallet");
+    check_wallet(&doc["pooled_demo_wallet_varied"], "pooled-demo-wallet-varied");
 }

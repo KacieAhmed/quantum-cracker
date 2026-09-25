@@ -170,6 +170,10 @@ export function CustomWalletPanel({
         <textarea
           className="address-input mono"
           rows={3}
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
           value={mnemonic}
           disabled={disabled}
           placeholder="twelve (or more) words, space-separated"
@@ -185,6 +189,10 @@ export function CustomWalletPanel({
         <input
           className="address-input mono"
           type="password"
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
           value={passphrase}
           disabled={disabled}
           onChange={(e) => {
@@ -197,6 +205,10 @@ export function CustomWalletPanel({
         <span className="field-label">Cross-check address (optional — must match the derivation)</span>
         <input
           className="address-input mono"
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+          autoComplete="off"
           value={expectedAddress}
           disabled={disabled}
           placeholder="the address your wallet app shows, to cross-check"

@@ -24,6 +24,10 @@ export interface StartClassicParams {
   rawCandidates: number;
   progressMs: number;
   customWallet?: CustomWalletProvenance | null;
+  /** Limited-keyspace pool config passed to every lane (--pool-json). */
+  poolJsonPath?: string | null;
+  /** Called once when the run settles; the pool file's owner cleans it up. */
+  onSettled?: () => void;
 }
 
 export interface StartQuantumParams {
@@ -59,6 +63,7 @@ interface ActiveRun {
   errorMessage: string | null;
   broadcastTimer: NodeJS.Timeout | null;
   broadcast: Broadcast;
+  onSettled: (() => void) | null;
 }
 
 /**
@@ -120,6 +125,7 @@ export class RunManager {
       errorMessage: null,
       broadcastTimer: null,
       broadcast,
+      onSettled: params.onSettled ?? null,
     };
     this.active = run;
     run.broadcastTimer = setInterval(
@@ -134,6 +140,7 @@ export class RunManager {
         address: params.address,
         addressType: params.addressType,
         progressMs: params.progressMs,
+        poolJsonPath: params.poolJsonPath ?? null,
       });
       run.procs.set(id, proc);
       void this.consumeLane(run, proc);
@@ -168,6 +175,7 @@ export class RunManager {
       errorMessage: null,
       broadcastTimer: null,
       broadcast,
+      onSettled: null,
     };
     this.active = run;
     run.broadcastTimer = setInterval(
@@ -324,6 +332,15 @@ export class RunManager {
       status: run.status,
       report: run.report,
     });
+    // Owner-supplied cleanup (limited-keyspace pool file); failures surface
+    // but never fail an already-settled run.
+    if (run.onSettled !== null) {
+      try {
+        run.onSettled();
+      } catch (err) {
+        console.error(`run ${run.report.runId} cleanup failed:`, err);
+      }
+    }
   }
 
   private aggregateOf(run: ActiveRun): Aggregate {

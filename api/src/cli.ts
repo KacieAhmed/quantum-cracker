@@ -75,6 +75,11 @@ export interface LaneSpec extends LaneRange {
   /** Engine address kind: eth | btc-p2pkh | btc-bech32 (also btc). */
   addressType: string;
   progressMs: number;
+  /**
+   * Limited-keyspace pool config (pool words, fixed words, varied positions)
+   * for template runs; null/undefined scans the bundled pooled corpus.
+   */
+  poolJsonPath?: string | null;
 }
 
 export interface LaneProcess {
@@ -101,6 +106,9 @@ export function spawnLane(cliPath: string, spec: LaneSpec): LaneProcess {
     "--progress-ms",
     String(spec.progressMs),
   ];
+  if (spec.poolJsonPath !== undefined && spec.poolJsonPath !== null) {
+    args.push("--pool-json", spec.poolJsonPath);
+  }
   const child = spawn(cliPath, args, { stdio: ["ignore", "pipe", "pipe"] });
   return {
     lane: spec,
@@ -224,4 +232,20 @@ export async function listTargets(
 ): Promise<CorpusDoc> {
   const { stdout } = await runCapture(cliPath, ["--list-targets"], timeoutMs);
   return JSON.parse(stdout) as CorpusDoc;
+}
+
+export interface WordlistDoc {
+  words: string[];
+}
+
+/**
+ * The engine's embedded BIP-39 English wordlist (--list-wordlist): the single
+ * source of truth for building limited-keyspace pool configs.
+ */
+export async function listWordlist(
+  cliPath: string,
+  timeoutMs = 10_000,
+): Promise<WordlistDoc> {
+  const { stdout } = await runCapture(cliPath, ["--list-wordlist"], timeoutMs);
+  return JSON.parse(stdout) as WordlistDoc;
 }

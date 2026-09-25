@@ -51,6 +51,31 @@ export interface CustomWalletProvenance {
   crossCheckUsed: boolean;
   /** Whether the phrase lies inside the bounded pooled demo keyspace. */
   inPooledSpace: boolean;
+  /**
+   * Set when the run searched a limited keyspace built from the user's own
+   * seed knowledge (their words fixed, declared slots varying over the full
+   * BIP-39 list). The target is still derived from the same request's
+   * mnemonic; the disclosed space contains the true phrase by construction.
+   */
+  limitedKeyspace: LimitedKeyspace | null;
+}
+
+/**
+ * The disclosed keyspace of a limited-keyspace run: varied positions sweep
+ * the full BIP-39 wordlist, so the true phrase is inside by construction and
+ * a genuine match is reachable — stated up front, not discovered at exhaustion.
+ */
+export interface LimitedKeyspace {
+  /** 1-indexed phrase positions that vary over the full wordlist. */
+  variedPositions1Indexed: number[];
+  /** Distinct words each varied position ranges over (the full BIP-39 list). */
+  poolWords: number;
+  /** Raw assemblies: poolWords^prefixSlots × poolWords. */
+  rawAssemblies: number;
+  /** Checksum-valid candidates the enumeration is expected to derive. */
+  estimatedChecksumValid: number;
+  /** True by construction: the varied slots sweep the full wordlist. */
+  containsPhraseByConstruction: true;
 }
 
 export type RunStatus =

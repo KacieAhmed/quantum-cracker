@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   PER_CORE_DERIVATIONS_PER_SEC,
@@ -19,17 +19,20 @@ import { splitSpace } from "./ranges.js";
 import {
   deriveMnemonic,
   listTargets,
+  listWordlist,
   validateAddresses,
   MnemonicError,
   type CorpusDoc,
   type MnemonicDerivation,
   type TargetVerdict,
+  type WordlistDoc,
 } from "./cli.js";
 import { RunManager } from "./runManager.js";
 import { makeQuantumRunner } from "./quantum.js";
 import type {
   Chain,
   CustomWalletProvenance,
+  LimitedKeyspace,
   Mode,
   RunReport,
   ServerMessage,
@@ -69,6 +72,13 @@ interface CustomWalletBody {
    * never accepted.
    */
   expectedAddress?: string;
+  /**
+   * Limited-keyspace mode: 0-based phrase positions to vary over the FULL
+   * BIP-39 wordlist while every other position stays fixed. The target is
+   * still derived from this same request's mnemonic; the disclosed keyspace
+   * contains the true phrase by construction. Classical mode only.
+   */
+  varySlots?: number[];
 }
 
 interface CrackBody {
@@ -100,6 +110,13 @@ const crackBodySchema = {
         mnemonic: { type: "string", minLength: 1 },
         passphrase: { type: "string" },
         expectedAddress: { type: "string", minLength: 1 },
+        varySlots: {
+          type: "array",
+          // Coarse bound only (any BIP-39 phrase length); the handler's
+          // varySlotsError returns the precise 422 for out-of-range slots.
+          items: { type: "integer", minimum: 0, maximum: 23 },
+          maxItems: 8,
+        },
       },
     },
   },
@@ -132,6 +149,85 @@ function boundedKeyspaceNote(wallet: CustomWalletProvenance): string {
     : "Your wallet's address lies OUTSIDE the bounded pooled demo keyspace — the run stays bounded and will end exhausted without a match. That is the honest demonstration of keyspace scale, not a failure of your wallet.";
 }
 
+/** Max simultaneously-varied phrase slots the limited-keyspace mode allows. */
+const VARY_SLOTS_MAX = 4;
+
+/**
+ * Validation for user-declared varying slots (0-based positions). Returns an
+ * error message, or null when the slots are usable. Only 12-word phrases are
+ * supported: the engine's template space is a 12-slot structure.
+ */
+function varySlotsError(slots: number[], wordCount: number): string | null {
+  if (wordCount !== 12) {
+    return "the limited-keyspace mode supports 12-word seed phrases";
+  }
+  if (slots.length > VARY_SLOTS_MAX) {
+    return `at most ${VARY_SLOTS_MAX} phrase slots can vary at once — beyond that the disclosed keyspace grows past an honest demo runtime`;
+  }
+  const seen = new Set<number>();
+  for (const slot of slots) {
+    if (!Number.isInteger(slot) || slot < 0 || slot >= wordCount) {
+      return `vary slots must be phrase positions between 0 and ${wordCount - 1}`;
+    }
+    if (seen.has(slot)) {
+      return `phrase position ${slot} is repeated — each slot can vary only once`;
+    }
+    seen.add(slot);
+  }
+  return null;
+}
+
+/**
+ * The disclosed space for vary slots over a full wordlist. The engine folds
+ * the twelfth slot into the checksum sweep, so only varied slots among the
+ * first eleven widen the prefix space; each prefix ordinal then yields
+ * poolSize/16 checksum-valid candidates (every prefix nibble has that many
+ * completions in the full list).
+ */
+function templateKeyspace(
+  varySlots: number[],
+  poolSize: number,
+): LimitedKeyspace & { prefixes: number } {
+  const variedFirst11 = varySlots.filter((slot) => slot < 11).length;
+  const prefixes = poolSize ** variedFirst11;
+  return {
+    variedPositions1Indexed: [...varySlots]
+      .sort((a, b) => a - b)
+      .map((slot) => slot + 1),
+    poolWords: poolSize,
+    rawAssemblies: prefixes * poolSize,
+    estimatedChecksumValid: prefixes * (poolSize / 16),
+    containsPhraseByConstruction: true,
+    prefixes,
+  };
+}
+
+/** Up-front disclosure for a limited-keyspace run: space, containment, ETA. */
+function limitedKeyspaceNote(
+  keyspace: LimitedKeyspace,
+  etaSecondsValue: number | null,
+): string {
+  const positions = keyspace.variedPositions1Indexed.join(", ");
+  const eta =
+    etaSecondsValue === null
+      ? "an estimate shown once the run starts"
+      : etaSecondsValue < 90
+        ? `about ${Math.max(1, Math.round(etaSecondsValue))} seconds`
+        : etaSecondsValue < 5400
+          ? `about ${Math.round(etaSecondsValue / 60)} minutes`
+          : `about ${(etaSecondsValue / 3600).toFixed(1)} hours`;
+  const singular = keyspace.variedPositions1Indexed.length === 1;
+  return (
+    `Limited-keyspace search: phrase position${singular ? "" : "s"} ${positions} ` +
+    `var${singular ? "ies" : "y"} over the full ` +
+    `${keyspace.poolWords.toLocaleString("en-US")}-word BIP-39 list while your other words stay fixed. ` +
+    `The disclosed space is ${keyspace.rawAssemblies.toLocaleString("en-US")} raw assemblies ` +
+    `(~${keyspace.estimatedChecksumValid.toLocaleString("en-US")} checksum-valid candidates). ` +
+    `Your true phrase is inside this space by construction, so a genuine match is reachable — ` +
+    `a full sweep takes ${eta} at the estimated rate.`
+  );
+}
+
 export async function buildApp(
   options: BuildAppOptions,
 ): Promise<FastifyInstance> {
@@ -160,6 +256,16 @@ export async function buildApp(
   let corpus: CorpusDoc | null = options.corpus ?? null;
   const sysInfo = options.systemInfoFn ?? systemInfo;
   const clients = new Set<WebSocket>();
+
+  // The engine's own BIP-39 list, fetched once: the single source of truth
+  // for limited-keyspace pool configs.
+  let wordlistCache: WordlistDoc | null = null;
+  const engineWordlist = async (): Promise<WordlistDoc> => {
+    if (wordlistCache === null) {
+      wordlistCache = await listWordlist(options.cliPath);
+    }
+    return wordlistCache;
+  };
 
   const runManager = new RunManager({
     cliPath: options.cliPath,
@@ -317,9 +423,14 @@ export async function buildApp(
       // third-party address is never accepted, and a typed address is only a
       // cross-check that must match the derivation. Corpus mode: an explicit
       // bundled-corpus address, engine-validated.
+      const runId = newRunId();
       let targetAddress: string;
       let targetKind: string;
       let customWallet: CustomWalletProvenance | null = null;
+      let limitedKeyspace: (LimitedKeyspace & { prefixes: number }) | null =
+        null;
+      let poolJsonPath: string | null = null;
+      let poolFileCleanup: (() => void) | null = null;
 
       if (body.customWallet !== undefined) {
         let derivation: MnemonicDerivation;
@@ -376,12 +487,71 @@ export async function buildApp(
             });
           }
         }
+        // Limited-keyspace mode: declared slots vary over the full BIP-39
+        // list, every other position stays fixed, and the disclosed keyspace
+        // contains the true phrase by construction. Classical only — the
+        // toy Grover simulation has no user phrase to contain.
+        const varySlots = body.customWallet.varySlots ?? [];
+        if (varySlots.length > 0 && body.mode === "quantum") {
+          return reply.code(422).send({
+            error:
+              "the limited-keyspace search is classical-only — quantum mode is a toy Grover simulation over the bundled tiny keyspace, not your phrase",
+          });
+        }
+        const phraseWords = derivation.mnemonic.trim().split(/\s+/);
+        if (varySlots.length > 0) {
+          const slotError = varySlotsError(varySlots, phraseWords.length);
+          if (slotError !== null) {
+            return reply.code(422).send({ error: slotError });
+          }
+          let wordlist: string[];
+          try {
+            wordlist = (await engineWordlist()).words;
+          } catch (err) {
+            return reply
+              .code(503)
+              .send({ error: `engine unavailable: ${String(err)}` });
+          }
+          if (wordlist.length % 16 !== 0) {
+            return reply.code(503).send({
+              error: `unexpected BIP-39 wordlist size ${wordlist.length} — expected a multiple of 16 checksum values`,
+            });
+          }
+          limitedKeyspace = templateKeyspace(varySlots, wordlist.length);
+          const poolDir = path.join(options.runsDir, "pools");
+          await mkdir(poolDir, { recursive: true });
+          const poolPath = path.join(poolDir, `${runId}.json`);
+          // Her words stay fixed; the declared slots sweep the full list.
+          const poolConfig = {
+            pool_words: wordlist,
+            variable_positions_1_indexed:
+              limitedKeyspace.variedPositions1Indexed,
+            fixed_words_1_indexed: Object.fromEntries(
+              phraseWords
+                .map((word, index) => [index, word] as const)
+                .filter(([index]) => !varySlots.includes(index))
+                .map(([index, word]) => [String(index + 1), word]),
+            ),
+          };
+          // 0600: until the run settles this file holds most of the user's
+          // phrase; only the varied slots are meant to be enumerable.
+          await writeFile(poolPath, JSON.stringify(poolConfig), {
+            mode: 0o600,
+          });
+          poolJsonPath = poolPath;
+          poolFileCleanup = () => {
+            unlink(poolPath).catch((err: unknown) => {
+              console.error(`pool file cleanup failed for ${runId}:`, err);
+            });
+          };
+        }
         customWallet = {
           targetSource: "derived-from-mnemonic",
           derivedAddresses: derivation.addresses,
           paths: derivation.paths,
           crossCheckUsed: expected !== undefined && expected.length > 0,
           inPooledSpace: derivation.pool_membership.in_space,
+          limitedKeyspace,
         };
       } else {
         const address = body.address?.trim() ?? "";
@@ -430,7 +600,6 @@ export async function buildApp(
           body.quantumBits ?? QUANTUM_BITS_DEFAULT,
           QUANTUM_BITS_MAX,
         );
-        const runId = newRunId();
         const report = runManager.startQuantum(
           { runId, chain: body.chain, address: targetAddress, bits, customWallet },
           broadcast,
@@ -462,10 +631,23 @@ export async function buildApp(
       }
 
       const doc = await ensureCorpus();
-      const total = doc.space.total_prefixes;
-      const ranges = splitSpace(total, workers);
+      // Limited-keyspace runs derive their own space: lane ranges split the
+      // template's prefix ordinals; totals use its checksum-valid estimate.
+      const total =
+        limitedKeyspace === null
+          ? doc.space.total_prefixes
+          : limitedKeyspace.estimatedChecksumValid;
+      const rawCandidates =
+        limitedKeyspace === null
+          ? doc.space.raw_candidates
+          : limitedKeyspace.rawAssemblies;
+      const ranges = splitSpace(
+        limitedKeyspace === null
+          ? doc.space.total_prefixes
+          : limitedKeyspace.prefixes,
+        workers,
+      );
 
-      const runId = newRunId();
       const report = runManager.startClassic(
         {
           runId,
@@ -474,9 +656,11 @@ export async function buildApp(
           addressType: targetKind,
           ranges,
           totalCandidates: total,
-          rawCandidates: doc.space.raw_candidates,
+          rawCandidates,
           progressMs: options.progressMs ?? PROGRESS_MS,
           customWallet,
+          poolJsonPath,
+          ...(poolFileCleanup === null ? {} : { onSettled: poolFileCleanup }),
         },
         broadcast,
       );
@@ -491,14 +675,23 @@ export async function buildApp(
         mode: "classic",
         lanes: ranges.map((r, i) => ({ id: i, ...r })),
         totalCandidates: total,
-        rawCandidates: doc.space.raw_candidates,
+        rawCandidates,
         estimatedRatePerSec: estimatedRate,
         etaSeconds: etaSeconds(total, 0, estimatedRate),
         safeMaxWorkers: sys.safeMaxWorkers,
         cores: sys.cores,
         forced: workers > sys.safeMaxWorkers,
         ...(customWallet !== null
-          ? { customWallet, targetNote: boundedKeyspaceNote(customWallet) }
+          ? {
+              customWallet,
+              targetNote:
+                limitedKeyspace === null
+                  ? boundedKeyspaceNote(customWallet)
+                  : limitedKeyspaceNote(
+                      limitedKeyspace,
+                      etaSeconds(total, 0, estimatedRate),
+                    ),
+            }
           : {}),
       });
     },

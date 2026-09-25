@@ -12,7 +12,8 @@ import {
 import { FALLBACK_PER_CORE_RATE, estimateAggregateRate, etaSeconds } from "./estimate";
 import { TICKER_LIMIT, VALIDATE_DEBOUNCE_MS } from "./constants";
 import { emptyRunUiState, foldMessage, type RunUiState } from "./reducer";
-import type { Chain, CorpusDoc, DeriveResponse, Mode, ServerMessage, SystemInfo, TargetVerdict } from "./types";
+import type { Chain, CorpusDoc, Mode, ServerMessage, SystemInfo, TargetVerdict } from "./types";
+import type { CustomWalletSelection } from "./components/CustomWalletPanel";
 import { Header } from "./components/Header";
 import { AddressPanel } from "./components/AddressPanel";
 import { CustomWalletPanel } from "./components/CustomWalletPanel";
@@ -86,12 +87,9 @@ export default function App() {
   const [startError, setStartError] = useState<string | null>(null);
   const [tickerPhrases, setTickerPhrases] = useState<string[]>([]);
   const [walletMode, setWalletMode] = useState(false);
-  const [customWallet, setCustomWallet] = useState<{
-    mnemonic: string;
-    passphrase: string;
-    expectedAddress: string;
-    derived: DeriveResponse | null;
-  } | null>(null);
+  const [customWallet, setCustomWallet] = useState<CustomWalletSelection | null>(
+    null,
+  );
   const touchedWorkersRef = useRef(false);
 
   const ui = useRunFeed();
@@ -194,13 +192,18 @@ export default function App() {
           chain,
           mode,
           // The derived address is the only target; a typed address is only
-          // a cross-check, and no freeform address is ever sent.
+          // a cross-check, and no freeform address is ever sent. Marked words
+          // switch the run to the limited-keyspace space that contains the
+          // phrase by construction.
           customWallet: {
             mnemonic: customWallet.mnemonic,
             passphrase: customWallet.passphrase,
             ...(customWallet.expectedAddress === ""
               ? {}
               : { expectedAddress: customWallet.expectedAddress }),
+            ...(customWallet.varySlots.length === 0
+              ? {}
+              : { varySlots: customWallet.varySlots }),
           },
           ...(mode === "classic"
             ? { workers, force }
@@ -285,9 +288,8 @@ export default function App() {
               chain={chain}
               onChain={setChain}
               disabled={running}
-              onDerived={(mnemonic, passphrase, expectedAddress, derived) =>
-                setCustomWallet({ mnemonic, passphrase, expectedAddress, derived })
-              }
+              estimatedRate={estimatedRate}
+              onDerived={setCustomWallet}
             />
           ) : (
             <AddressPanel

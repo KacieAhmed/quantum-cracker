@@ -57,6 +57,30 @@ export interface CustomWalletProvenance {
   paths: { eth: string; btc_p2pkh: string; btc_bech32: string };
   crossCheckUsed: boolean;
   inPooledSpace: boolean;
+  /**
+   * Set when the run searched a limited keyspace built from the user's own
+   * seed knowledge (their words fixed, declared slots varying over the full
+   * BIP-39 list). Mirrors api/src/types.ts.
+   */
+  limitedKeyspace: LimitedKeyspace | null;
+}
+
+/**
+ * The disclosed keyspace of a limited-keyspace run: varied positions sweep
+ * the full BIP-39 wordlist, so the true phrase is inside by construction and
+ * a genuine match is reachable. Mirrors api/src/types.ts.
+ */
+export interface LimitedKeyspace {
+  /** 1-indexed phrase positions that vary over the full wordlist. */
+  variedPositions1Indexed: number[];
+  /** Distinct words each varied position ranges over (the full BIP-39 list). */
+  poolWords: number;
+  /** Raw assemblies: poolWords^prefixSlots × poolWords. */
+  rawAssemblies: number;
+  /** Checksum-valid candidates the enumeration is expected to derive. */
+  estimatedChecksumValid: number;
+  /** True by construction: the varied slots sweep the full wordlist. */
+  containsPhraseByConstruction: true;
 }
 
 export type RunStatus =
@@ -159,6 +183,12 @@ export interface CrackRequest {
     passphrase?: string;
     /** Optional cross-check — must equal the derived address. */
     expectedAddress?: string;
+    /**
+     * Limited-keyspace mode: 0-based phrase positions to vary over the FULL
+     * BIP-39 wordlist while every other position stays fixed. Classical
+     * mode only; the disclosed keyspace contains the phrase by construction.
+     */
+    varySlots?: number[];
   };
 }
 

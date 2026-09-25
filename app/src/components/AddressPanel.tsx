@@ -40,6 +40,8 @@ export function AddressPanel({
         className={`address-input${verdict ? (valid ? " valid" : " invalid") : ""}`}
         type="text"
         spellCheck={false}
+        autoCapitalize="none"
+        autoCorrect="off"
         autoComplete="off"
         placeholder={
           "0x… or 1… / bc1… — a corpus address (demo wallets only)"

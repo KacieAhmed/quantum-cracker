@@ -828,6 +828,108 @@ describe("address-only full-space lottery", () => {
     }
   });
 
+  it("pins the calibration phrase first, labeled 'pinned — not random', then draws randomly", async () => {
+    // FAKE_MATCH=0: no canned match anywhere — the run must survive the
+    // non-matching pin, draw randomly, and end at its budget.
+    process.env.FAKE_MATCH = "0";
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { messages, nextMatching } = collect(ws);
+
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: FOREIGN_ETH,
+          probe: true,
+          drawBudget: 20000,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+
+      // The pinned event precedes any random draw and carries the label.
+      const pinnedMsg = await nextMatching((m) => m.type === "pinned");
+      if (pinnedMsg.type !== "pinned") throw new Error("unreachable");
+      expect(pinnedMsg.phrase).toContain("permit bean gaze");
+      expect(pinnedMsg.label).toBe("pinned — not random");
+      expect(pinnedMsg.tested).toBe(true);
+
+      // Random draws after the pin: every frontier phrase is a random draw
+      // (all 12 slots vary), never a prefix-ordinal walk.
+      const drewRandom = await nextMatching(
+        (m) =>
+          m.type === "snapshot" &&
+          m.report.lanes.some((l) => l.frontierPhrase !== null),
+      );
+      if (drewRandom.type !== "snapshot") throw new Error("unreachable");
+      expect(drewRandom.report.lanes[0]?.frontierPhrase).toMatch(
+        /^random draw \d+$/,
+      );
+      expect(messages.indexOf(pinnedMsg)).toBeLessThan(
+        messages.indexOf(drewRandom),
+      );
+
+      // The pin did not end the run — it does not derive the target; the
+      // lottery continues into random sampling and ends at its budget.
+      const { runId } = started.json();
+      const report = await waitForFinal(app, runId);
+      expect(report.status).toBe("budget-reached");
+      ws.close();
+    } finally {
+      delete process.env.FAKE_MATCH;
+      await app.close();
+    }
+  }, 20000);
+
+  it("stops on a watchlist discovery — labeled a discovery, never the requested target's phrase", async () => {
+    // The fixture arms a deterministic discovery when FAKE_DISCOVERY=1 and
+    // the armed watchlist contains its discovery address.
+    const DISCOVERY_ETH = "0x00000000000000000000000000000000d15c0dea";
+    process.env.FAKE_DISCOVERY = "1";
+    process.env.FAKE_MATCH = "0";
+    const watchDir = await mkdtemp(path.join(os.tmpdir(), "qcracker-watch-"));
+    const watchlistPath = path.join(watchDir, "watchlist.txt");
+    await writeFile(
+      watchlistPath,
+      "# one real-world address the fixture can reach\n" +
+        `${DISCOVERY_ETH}\n`,
+    );
+    const { app } = await makeApp({ watchlistPath });
+    try {
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: FOREIGN_ETH,
+          probe: true,
+          drawBudget: 20000,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      // The disclosure announces the armed watchlist up front.
+      expect(started.json().probe.disclosure).toContain("discovery watchlist");
+
+      const report = await waitForFinal(app, started.json().runId);
+      // The discovery settles the run like a match (freeze-and-display) but
+      // the payload says what happened: a random draw derived a watchlist
+      // address — the requested target's phrase was NOT found.
+      expect(report.status).toBe("matched");
+      expect(report.match).not.toBeNull();
+      expect(report.match?.discovery).toBe(true);
+      expect(report.match?.address).toBe(DISCOVERY_ETH);
+      expect(report.address).toBe(FOREIGN_ETH);
+    } finally {
+      delete process.env.FAKE_DISCOVERY;
+      delete process.env.FAKE_MATCH;
+      await app.close();
+    }
+  }, 20000);
+
   it("starts the disclosed lottery for any address and ends budget-reached — no coverage claim", async () => {
     process.env.FAKE_MATCH = "0";
     const { app } = await makeApp();
@@ -1078,6 +1180,42 @@ describe("cancel across run states", () => {
       await app.close();
     }
   });
+
+  it("returns 404 when cancelling a matched run that already settled", async () => {
+    const { app, port } = await makeApp();
+    try {
+      const ws = await connect(port);
+      const { nextMatching } = collect(ws);
+
+      const started = await app.inject({
+        method: "POST",
+        url: "/crack",
+        payload: {
+          chain: "ethereum",
+          mode: "classic",
+          address: POOLED_ETH,
+          probe: true,
+          drawBudget: 20000,
+        },
+      });
+      expect(started.statusCode).toBe(201);
+      const { runId } = started.json();
+
+      // Finalization is complete when the done event broadcasts — after it
+      // the run is no longer active and cancel must 404.
+      await nextMatching((m) => m.type === "done" && m.runId === runId);
+      ws.close();
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/crack/${runId}/cancel`,
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "no such active run" });
+    } finally {
+      await app.close();
+    }
+  }, 20000);
 
   it("still rejects an empty body on routes that require one", async () => {
     const { app } = await makeApp();

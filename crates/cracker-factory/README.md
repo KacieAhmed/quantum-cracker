@@ -37,9 +37,11 @@ engine's existing `--start`/`--count` flags.
 
 **The factory refuses any target address outside the bundled demo corpus**
 (`corpus.rs`). This is not a policy preference: the engine only ever searches
-the pooled demo space (2^24 candidate assemblies built around one throwaway
-wallet), so a target from anywhere else could **never** be found and a run
-would be a lie. Rejection happens before any worker starts.
+the bundled pooled demo spaces (2^24-2^25 candidate assemblies built around
+two throwaway wallets — the default varied-slot space, where every word slot
+draws from its own pool, and the legacy fixed-slot space), so a target from
+anywhere else could **never** be found and a run would be a lie. Rejection
+happens before any worker starts.
 
 All demo wallets are self-generated throwaways. Never use them with real
 funds. Real BIP-39 seed phrases are outside reach by construction — see
@@ -142,7 +144,8 @@ cargo build --release -p cracker-cli -p cracker-factory
 crates/cracker-factory/benches/benchmark.sh 60
 ```
 
-Measured on the 8-core / 8 GB dev sandbox (pooled 2^24 space, ETH target):
+Measured on the 8-core / 8 GB dev sandbox (legacy fixed-slot space — 2^24
+raw assemblies, ETH target):
 
 | workers | total derived | derivations/s | speedup vs N=1 | efficiency |
 |---|---|---|---|---|
@@ -159,10 +162,17 @@ refuse oversubscription by default. Note the efficiency column: at N=32 each
 worker gets less than a quarter of a core, so per-worker yield collapses even
 as the aggregate stays flat.
 
+The default varied-slot space (2^25 raw assemblies / 2^21 checksum-valid
+candidates) sustains ~5,600 derivations/s at 8 workers on the same sandbox.
+A full sweep is therefore ~6.3 minutes locally, ~25 minutes at the deployed
+reference rate (~1,400 derivations/s). A verified end-to-end run recovered
+the target in 67.6 s — the shuffled walk placed it 18% into the space.
+
 ## Usage
 
 ```sh
-# Full pooled-space search, 8 workers (matches in ~1-2 min on 8 cores)
+# Full pooled-space search, 8 workers (sweep ~6 min on 8 cores; a match
+# lands sooner if the shuffled walk reaches the target early)
 cracker-factory --target 0xb79f8aC312fF21AD16980a857f574A6e7e3ED9c5 --workers 8
 
 # Same, 1 MiB of quiet: only factory-start / factory-done on stdout

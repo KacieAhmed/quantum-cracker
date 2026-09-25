@@ -65,7 +65,13 @@ export interface CorpusTarget {
 
 export interface CorpusDoc {
   wallets: CorpusTarget[];
-  space: { total_prefixes: number; raw_candidates: number };
+  space: {
+    total_prefixes: number;
+    raw_candidates: number;
+    /** How the engine walks prefix ordinals (default space: shuffled). */
+    traversal?: "sequential" | "shuffled";
+    description?: string;
+  };
 }
 
 /** Options for one classic lane subprocess. */

@@ -56,8 +56,8 @@ pub struct ChainAddressJson {
 }
 
 /// The machine-readable `pool_config` block from the corpus document. Two
-/// shapes: the legacy shared-pool config (`pool_words` + `variable_positions`
-/// + `fixed_words`) and the varied-slot config (`slot_pools_1_indexed`, one
+/// shapes: the legacy shared-pool config (`pool_words`, `variable_positions`,
+/// `fixed_words`) and the varied-slot config (`slot_pools_1_indexed`, one
 /// pool per slot, plus an optional `traversal`).
 #[derive(Deserialize, Debug, Clone)]
 pub struct PoolConfigJson {
@@ -100,9 +100,8 @@ const TRAVERSAL_SEED: u64 = 0x5EED_CAFE_2026_0925;
 /// splitmix64 finalizer, seeded per round: a Feistel round function needs
 /// good mixing, not cryptographic strength.
 fn mix_round(word: u64, round: u32) -> u64 {
-    let mut z = word ^ TRAVERSAL_SEED.wrapping_add(
-        (u64::from(round) + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15),
-    );
+    let mut z = word
+        ^ TRAVERSAL_SEED.wrapping_add((u64::from(round) + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
     z = z.wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z ^= z >> 30;
     z = z.wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -135,10 +134,11 @@ fn feistel_pass_inverse(v: u64, half_bits: u32) -> u64 {
     (left << half_bits) | right
 }
 
-/// The shuffled walk: a bijection [0, domain) -> [0, domain) for power-of-two
-/// domains. The Feistel pass runs over the next power of four (2 * half_bits
-/// >= bits) and cycle-walks into the domain; the walk stays injective
-/// because it is a deterministic function of the value alone.
+/// The shuffled walk: a bijection on the half-open range `0..domain` for
+/// power-of-two domains. The Feistel pass runs over the next power of four
+/// (2 * half_bits >= bits) and cycle-walks into the domain. The walk stays
+/// injective since each output is a deterministic function of the value
+/// alone.
 fn shuffle_permute(v: u64, domain: u64) -> u64 {
     let half_bits = (63 - domain.leading_zeros()).div_ceil(2).max(1);
     let mut out = feistel_pass(v, half_bits);
@@ -305,9 +305,7 @@ impl PoolSearch {
     /// of more than one word. The 12th word slot is the checksum-filtered
     /// completion pool.
     pub fn prefix_positions(&self) -> Vec<usize> {
-        (0..11)
-            .filter(|&p| self.slot_pools[p].len() > 1)
-            .collect()
+        (0..11).filter(|&p| self.slot_pools[p].len() > 1).collect()
     }
 
     /// Pool size behind each slot (1-indexed): 1 = fixed slot.
@@ -537,10 +535,7 @@ mod tests {
         // ...and the walk order must test the target phrase at that display
         // ordinal (permutation is a bijection, and this is its fixed point
         // for the target's own native position under the traversal mapping).
-        assert_eq!(
-            pool.candidate_at(display).as_deref(),
-            Some(VARIED_TARGET)
-        );
+        assert_eq!(pool.candidate_at(display).as_deref(), Some(VARIED_TARGET));
     }
 
     #[test]
@@ -559,7 +554,7 @@ mod tests {
         // Sampled round-trips at the real demo domain (2^21).
         let demo_domain = 2_097_152u64;
         for i in 0..10_000u64 {
-            let native = (i as u64 * 209_719) % demo_domain; // strided spread
+            let native = (i * 209_719) % demo_domain; // strided spread
             let display = shuffle_permute(native, demo_domain);
             assert!(display < demo_domain);
             assert_eq!(shuffle_unpermute(display, demo_domain), native);
@@ -688,7 +683,10 @@ mod tests {
         let prefix = pool.assemble_prefix(VARIED_TARGET_NATIVE_ORDINAL);
         let mut candidates = Vec::new();
         pool.candidates_for_prefix(&prefix, &mut candidates);
-        assert_eq!(bip39::mnemonic_from_indices(&candidates[0]).unwrap(), VARIED_TARGET);
+        assert_eq!(
+            bip39::mnemonic_from_indices(&candidates[0]).unwrap(),
+            VARIED_TARGET
+        );
     }
 
     #[test]
@@ -853,7 +851,12 @@ mod tests {
         // slot 2 must still find a checksum-valid completion for the rest.
         let mut indices = [0u16; 12];
         for p in 1..=12 {
-            if !cfg.variable_positions.as_ref().unwrap().contains(&(p as u8)) {
+            if !cfg
+                .variable_positions
+                .as_ref()
+                .unwrap()
+                .contains(&(p as u8))
+            {
                 indices[p - 1] = crate::bip39::word_index(
                     cfg.fixed_words.as_ref().unwrap()[&p.to_string()].as_str(),
                 )

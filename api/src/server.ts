@@ -139,9 +139,10 @@ function derivedAddressForChain(
 }
 
 /**
- * Honest-scaling note for custom-wallet runs: the pooled 2^24 keyspace is a
- * bounded demo space, so a wallet outside it can only ever end exhausted.
- * Stated up front, not discovered at "exhausted".
+ * Honest-scaling note for custom-wallet runs: the bundled pooled demo
+ * keyspaces (the default varied-slot space and the legacy fixed-slot one)
+ * are bounded, so a wallet outside them can only ever end exhausted. Stated
+ * up front, not discovered at "exhausted".
  */
 function boundedKeyspaceNote(wallet: CustomWalletProvenance): string {
   return wallet.inPooledSpace

@@ -185,8 +185,8 @@ mod tests {
     #[test]
     fn engine_space_constants_match_the_corpus_document() {
         assert_eq!(POOL_LEN_RAW, 16);
-        assert_eq!(TOTAL_PREFIXES, 1_048_576); // 16^5
-        assert_eq!(RAW_SPACE, 16_777_216); // 16^6 = 2^24
+        assert_eq!(TOTAL_PREFIXES, 2_097_152); // 2^21
+        assert_eq!(RAW_SPACE, 33_554_432); // 2^21 x 16 = 2^25
         assert_eq!(TOTAL_PREFIXES * POOL_LEN_RAW, RAW_SPACE);
     }
 }

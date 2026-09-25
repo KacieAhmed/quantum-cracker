@@ -145,5 +145,8 @@ fn all_six_demo_wallets_round_trip() {
         check_wallet(wallet, "demo-wallet");
     }
     check_wallet(&doc["pooled_demo_wallet"], "pooled-demo-wallet");
-    check_wallet(&doc["pooled_demo_wallet_varied"], "pooled-demo-wallet-varied");
+    check_wallet(
+        &doc["pooled_demo_wallet_varied"],
+        "pooled-demo-wallet-varied",
+    );
 }

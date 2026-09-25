@@ -124,10 +124,7 @@ fn all_demo_wallets_match_the_corpus_exactly() {
     let pooled = &doc["pooled_demo_wallet"];
     let pooled_varied = &doc["pooled_demo_wallet_varied"];
     assert_eq!(wallets.len(), 4, "four random demo wallets");
-    for w in wallets
-        .iter()
-        .chain([pooled, pooled_varied])
-    {
+    for w in wallets.iter().chain([pooled, pooled_varied]) {
         let label = w
             .get("label")
             .and_then(|l| l.as_str())

@@ -65,10 +65,9 @@ export function AddressPanel({
       ) : (
         corpus !== null && (
           <p className="note">
-            {corpus.wallets.length} bundled demo wallets · searchable space:{" "}
-            {corpus.space.total_prefixes.toLocaleString("en-US")} checksum-valid
-            prefixes ({corpus.space.raw_candidates.toLocaleString("en-US")} raw
-            assemblies). Addresses outside this corpus can never match.
+            {corpus.space.description
+              ? `${corpus.space.description} Addresses outside this corpus can never match.`
+              : `Searchable space: ${corpus.space.total_prefixes.toLocaleString("en-US")} checksum-valid prefixes (${corpus.space.raw_candidates.toLocaleString("en-US")} raw assemblies). Addresses outside this corpus can never match.`}
           </p>
         )
       )}

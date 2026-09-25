@@ -9,11 +9,12 @@ export const QUANTUM_NOTE =
 
 /** The standing honesty note shown wherever results or estimates appear. */
 export const SCOPE_NOTE =
-  "Demo scope: this tool searches only the bundled demo corpora — a pooled 16^6 = 2^24-phrase space " +
-  "(1,048,576 checksum-valid candidates). A real 12-word BIP-39 wallet spans 2^128 phrases (2^132 " +
-  "including checksum bits): unreachable classically, and Grover's quadratic speedup would still " +
-  "need ~2^64 oracle calls on an impractical reversible BIP-39 circuit. An address outside the demo " +
-  "corpora can never match, and no real wallet can be recovered with this tool.";
+  "Demo scope: this tool searches only the bundled demo corpora — a varied-slot pooled space where " +
+  "every word slot draws from its own pool (2,097,152 checksum-valid candidates from 33,554,432 = " +
+  "2^25 raw assemblies). A real 12-word BIP-39 wallet spans 2^128 phrases (2^132 including checksum " +
+  "bits): unreachable classically, and Grover's quadratic speedup would still need ~2^64 oracle calls " +
+  "on an impractical reversible BIP-39 circuit. An address outside the demo corpora can never match, " +
+  "and no real wallet can be recovered with this tool.";
 
 /** How many recent candidate phrases the ticker keeps visible. */
 export const TICKER_LIMIT = 24;

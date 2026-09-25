@@ -187,10 +187,7 @@ fn load_pool(args: &Args) -> cracker_core::Result<PoolSearch> {
             let doc: WalletsFileJson = serde_json::from_str(cracker_core::WALLETS_JSON)?;
             // The varied-slot space is the default classic demo target; the
             // legacy fixed-slot pool stays available via --pool-json.
-            let wallet = doc
-                .pooled_varied
-                .as_ref()
-                .unwrap_or(&doc.pooled);
+            let wallet = doc.pooled_varied.as_ref().unwrap_or(&doc.pooled);
             PoolSearch::from_config(&wallet.pool_config, &args.passphrase)
         }
     }
@@ -293,7 +290,11 @@ fn list_targets() -> cracker_core::Result<serde_json::Value> {
     // the legacy fixed-slot pool is kept as a second corpus option but is not
     // reachable from the default search space, so it is listed unsearchable.
     for (key, id, searchable) in [
-        ("pooled_demo_wallet_varied", "pooled-demo-wallet-varied", true),
+        (
+            "pooled_demo_wallet_varied",
+            "pooled-demo-wallet-varied",
+            true,
+        ),
         ("pooled_demo_wallet", "pooled-demo-wallet", false),
     ] {
         let wallet = &doc[key];
@@ -313,8 +314,9 @@ fn list_targets() -> cracker_core::Result<serde_json::Value> {
     }
     // Keyspace dimensions of the pooled search space: the API splits these
     // prefix ordinals into disjoint worker ranges before spawning lanes.
-    let pool_cfg: PoolConfigJson = serde_json::from_value(doc["pooled_demo_wallet_varied"]["pool_config"].clone())
-        .map_err(|e| CrackerError::Other(format!("embedded pool_config: {e}")))?;
+    let pool_cfg: PoolConfigJson =
+        serde_json::from_value(doc["pooled_demo_wallet_varied"]["pool_config"].clone())
+            .map_err(|e| CrackerError::Other(format!("embedded pool_config: {e}")))?;
     let pool = PoolSearch::from_config(&pool_cfg, "")?;
     Ok(serde_json::json!({
         "wallets": out,

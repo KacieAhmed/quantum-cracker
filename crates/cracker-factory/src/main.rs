@@ -599,7 +599,7 @@ fn orchestrate(args: Args) -> Result<ExitCode, String> {
             "declared_space_raw": declared_raw,
             "declared_space_human": declared_human,
             "budget_seconds": budget,
-            "searched_space": "the bundled demo space (2^24 raw assemblies), not the declared space",
+            "searched_space": "the bundled demo spaces (2^24-2^25 raw assemblies), not the declared space",
             "huge_space_threshold_raw": huge_space_threshold.to_string(),
             "declared_exceeds_threshold": declared_f > plan::u256_to_f64(huge_space_threshold),
             "measured_aggregate_derived_per_sec": aggregate_rate,
